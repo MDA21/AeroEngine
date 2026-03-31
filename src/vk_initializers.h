@@ -1,0 +1,66 @@
+#pragma once
+#include "vk_types.h"
+
+namespace vkinit {
+
+    inline VkRenderingAttachmentInfo attachment_info(
+        VkImageView view, VkClearValue* clear, VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+        VkRenderingAttachmentInfo colorAttachment{};
+        colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAttachment.pNext = nullptr;
+
+        colorAttachment.imageView = view;
+        colorAttachment.imageLayout = layout;
+        colorAttachment.loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        if (clear) {
+            colorAttachment.clearValue = *clear;
+        }
+
+        return colorAttachment;
+    }
+
+    inline VkRenderingInfo rendering_info(VkExtent2D renderExtent, VkRenderingAttachmentInfo* colorAttachment, VkRenderingAttachmentInfo* depthAttachment) {
+        VkRenderingInfo renderInfo{};
+        renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        renderInfo.pNext = nullptr;
+
+        renderInfo.renderArea = VkRect2D{ VkOffset2D{ 0, 0 }, renderExtent };
+        renderInfo.layerCount = 1;
+        renderInfo.colorAttachmentCount = 1;
+        renderInfo.pColorAttachments = colorAttachment;
+        renderInfo.pDepthAttachment = depthAttachment;
+        renderInfo.pStencilAttachment = nullptr;
+
+        return renderInfo;
+    }
+
+    inline void transition_image(VkCommandBuffer cmd, VkImage image, VkImageLayout currentLayout, VkImageLayout newLayout) {
+        VkImageMemoryBarrier2 imageBarrier{};
+        imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        imageBarrier.pNext = nullptr;
+        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        imageBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        imageBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+        imageBarrier.oldLayout = currentLayout;
+        imageBarrier.newLayout = newLayout;
+
+        VkImageSubresourceRange subImage{};
+        subImage.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        subImage.baseMipLevel = 0;
+        subImage.levelCount = VK_REMAINING_MIP_LEVELS;
+        subImage.baseArrayLayer = 0;
+        subImage.layerCount = VK_REMAINING_ARRAY_LAYERS;
+        imageBarrier.subresourceRange = subImage;
+        imageBarrier.image = image;
+
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.pNext = nullptr;
+        depInfo.imageMemoryBarrierCount = 1;
+        depInfo.pImageMemoryBarriers = &imageBarrier;
+
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
+}
