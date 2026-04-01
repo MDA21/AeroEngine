@@ -63,6 +63,8 @@ add_executable(${PROJECT_NAME}
  ${IMGUI_SOURCES}
 )
 
+target_compile_definitions(AeroEngine PRIVATE IMGUI_IMPL_VULKAN_USE_VOLK)
+
  add_dependencies(AeroEngine CompileShaders)
 
 target_include_directories(${PROJECT_NAME} PRIVATE

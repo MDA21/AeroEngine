@@ -33,6 +33,8 @@ private:
 	void init_pipelines();
 
 	void draw();
+
+	void init_imgui();
 	
 	FrameData& get_current_frame() { return _frames[_frameNumber % FRAME_OVERLAP]; }
 
@@ -63,4 +65,7 @@ private:
 	//pipelines
 	VkPipelineLayout _trianglePipelineLayout;
 	VkPipeline _trianglePipeline;
+
+	//imgui
+	VkDescriptorPool _imguiPool;
 };

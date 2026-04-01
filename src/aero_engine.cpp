@@ -25,6 +25,8 @@ void AeroEngine::init() {
 
 	init_pipelines();
 
+	init_imgui();
+
 	_isInitialized = true;
 	
 	std::cout << "[AeroEngine] Initialization complete." << std::endl;
@@ -256,9 +258,89 @@ void AeroEngine::init_pipelines() {
 		});
 }
 
+void AeroEngine::init_imgui() {
+	VkDescriptorPoolSize pool_sizes[] = {
+		{ VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+		{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
+	};
+
+	VkDescriptorPoolCreateInfo pool_info{};
+	pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+	pool_info.maxSets = 1000;
+	pool_info.poolSizeCount = (uint32_t)std::size(pool_sizes);
+	pool_info.pPoolSizes = pool_sizes;
+
+	VK_CHECK(vkCreateDescriptorPool(_vkContext.device, &pool_info, nullptr, &_imguiPool));
+
+	ImGui::CreateContext();
+	ImGui_ImplGlfw_InitForVulkan(_window, true);
+
+	ImGui_ImplVulkan_InitInfo init_info{};
+	init_info.Instance = _vkContext.instance;
+	init_info.PhysicalDevice = _vkContext.chosenGPU;
+	init_info.Device = _vkContext.device;
+	init_info.QueueFamily = _vkContext.graphicsQueueFamily;
+	init_info.Queue = _vkContext.graphicsQueue;
+	init_info.DescriptorPool = _imguiPool;
+	init_info.MinImageCount = 3;
+	init_info.ImageCount = 3;
+	init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+	init_info.UseDynamicRendering = true;
+
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo = {};
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &_swapchainImageFormat;
+
+	ImGui_ImplVulkan_Init(&init_info);
+
+	_mainDeletionQueue.push_function([=]() {
+		ImGui_ImplVulkan_Shutdown();
+		ImGui_ImplGlfw_Shutdown();
+		ImGui::DestroyContext();
+		vkDestroyDescriptorPool(_vkContext.device, _imguiPool, nullptr);
+		});
+}
+
 void AeroEngine::draw() {
 	VK_CHECK(vkWaitForFences(_vkContext.device, 1, &get_current_frame()._renderFence, true, 1000000000));
 	VK_CHECK(vkResetFences(_vkContext.device, 1, &get_current_frame()._renderFence));
+
+	ImGui_ImplVulkan_NewFrame();
+	ImGui_ImplGlfw_NewFrame();
+	ImGui::NewFrame();
+
+	ImGui::Begin("AeroEngine Debug");
+
+	static float fpsTimer = 0.0f;
+	static float displayFps = 0.0f;
+	static float displayMs = 0.0f;
+
+	fpsTimer += ImGui::GetIO().DeltaTime;
+	if (fpsTimer > 0.5f) {
+		displayFps = ImGui::GetIO().Framerate;
+		displayMs = 1000.0f / displayFps;
+		fpsTimer = 0.0f;
+	}
+
+	ImGui::Text("Performance: %.3f ms/frame (%.1f FPS)", displayMs, displayFps);
+
+	ImGui::Separator();
+	ImGui::Text("VSync: %s", (_swapchainImageFormat == VK_PRESENT_MODE_FIFO_KHR) ? "ON (FIFO)" : "OFF (MAILBOX)");
+
+	ImGui::End();
+
+	ImGui::Render();
 
 	uint32_t swapchainImageIndex;
 	VK_CHECK(vkAcquireNextImageKHR(_vkContext.device, _swapchain, 1000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex));
@@ -298,6 +380,8 @@ void AeroEngine::draw() {
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
 	vkCmdDraw(cmd, 3, 1, 0, 0);
+
+	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
 
 	vkCmdEndRendering(cmd);
 
