@@ -1,9 +1,19 @@
 #include "aero_engine.h"
 #include <GLFW/glfw3.h>
 #include <iostream>
+#include <optional>
 #include <VkBootstrap.h>
 #include "vk_initializers.h"
 #include <vk_pipelines.h>
+#include <stb_image.h>
+#include "gltf_loader.h"
+#include <glm/ext/matrix_clip_space.hpp>
+#include <glm/ext/matrix_transform.hpp>
+
+struct MeshPushConstants {
+	glm::mat4 render_matrix;
+	uint32_t material_id;
+};
 
 AeroEngine& AeroEngine::Get() {
 	static AeroEngine engine;
@@ -23,9 +33,22 @@ void AeroEngine::init() {
 
 	init_sync_structures();
 
+	init_bindless_descriptor();
+
+	init_depth_image();
+
 	init_pipelines();
 
 	init_imgui();
+
+	std::string modelPath = "F:/VSproject/AeroEngine/assets/Sponza/glTF/Sponza.gltf";
+	std::optional<SceneData> sceneOpt = GLTFLoader::load_gltf(modelPath);
+	if (sceneOpt.has_value()) {
+		upload_scene_data(sceneOpt.value());
+	}
+	else {
+		std::cerr << "[AeroEngine] CRITICAL: Failed to load startup scene!" << std::endl;
+	}
 
 	_isInitialized = true;
 	
@@ -63,6 +86,21 @@ void AeroEngine::init_window() {
 
 void AeroEngine::init_vulkan() {
 	_vkContext.init(_window, _mainDeletionQueue);
+
+	VkSamplerCreateInfo sampInfo{};
+	sampInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	sampInfo.magFilter = VK_FILTER_LINEAR;
+	sampInfo.minFilter = VK_FILTER_LINEAR;
+	sampInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	sampInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	sampInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	sampInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	sampInfo.maxAnisotropy = 1.0f;
+	VK_CHECK(vkCreateSampler(_vkContext.device, &sampInfo, nullptr, &_defaultSamplerLinear));
+
+	_mainDeletionQueue.push_function([=]() {
+		vkDestroySampler(_vkContext.device, _defaultSamplerLinear, nullptr);
+		});
 }
 
 void AeroEngine::init_swapchain() {
@@ -189,17 +227,27 @@ void AeroEngine::init_sync_structures() {
 
 void AeroEngine::init_pipelines() {
 	VkShaderModule triangleFragShader;
-	if (!vkutil::load_shader_module("shaders/colored_triangle.frag.spv", _vkContext.device, &triangleFragShader)) {
+	if (!vkutil::load_shader_module("shaders/mesh.frag.spv", _vkContext.device, &triangleFragShader)) {
 		std::cout << "Error when building the triangle fragment shader module" << std::endl;
 	}
 	VkShaderModule triangleVertShader;
-	if (!vkutil::load_shader_module("shaders/colored_triangle.vert.spv", _vkContext.device, &triangleVertShader)) {
+	if (!vkutil::load_shader_module("shaders/mesh.vert.spv", _vkContext.device, &triangleVertShader)) {
 		std::cout << "Error when building the triangle vertex shader module" << std::endl;
 	}
 
-	//创建 Pipeline Layout (目前为空，未来用于传 Push Constants 或 Descriptor Sets)
+	VkPushConstantRange pushConstant{};
+	pushConstant.offset = 0;
+	pushConstant.size = sizeof(glm::mat4) + sizeof(uint32_t); // 矩阵 + 材质ID (未来可扩展)
+	pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	//创建 Pipeline Layout
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	pipelineLayoutInfo.setLayoutCount = 1;
+	pipelineLayoutInfo.pSetLayouts = &_globalSetLayout;
+	pipelineLayoutInfo.pushConstantRangeCount = 1;
+	pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
+
 	VK_CHECK(vkCreatePipelineLayout(_vkContext.device, &pipelineLayoutInfo, nullptr, &_trianglePipelineLayout));
 
 	//配置 Pipeline Builder
@@ -226,6 +274,22 @@ void AeroEngine::init_pipelines() {
 	builder._inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	builder._inputAssembly.primitiveRestartEnable = VK_FALSE;
 
+	// 获取顶点描述
+	auto bindingDescription = Vertex::getBindingDescription();
+	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+	// 配置顶点输入状态
+	builder._vertexInputInfo = {};
+	builder._vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	builder._vertexInputInfo.vertexBindingDescriptionCount = 1;
+	builder._vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+	builder._vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+	builder._vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+	builder._depthStencil.depthTestEnable = VK_TRUE;
+	builder._depthStencil.depthWriteEnable = VK_TRUE;
+	builder._depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+
 	//光栅化设置：实心填充，不剔除（因为我们随便画的，防止看不见）
 	builder._rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
 	builder._rasterizer.lineWidth = 1.0f;
@@ -243,6 +307,7 @@ void AeroEngine::init_pipelines() {
 	// 1.3 动态渲染配置：告诉管线我们将画到什么格式的图片上
 	builder._renderInfo.colorAttachmentCount = 1;
 	builder._renderInfo.pColorAttachmentFormats = &_swapchainImageFormat;
+	builder._renderInfo.depthAttachmentFormat = _depthImageFormat;
 
 	//构建管线
 	_trianglePipeline = builder.build_pipeline(_vkContext.device);
@@ -302,6 +367,8 @@ void AeroEngine::init_imgui() {
 	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
 	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &_swapchainImageFormat;
 
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.depthAttachmentFormat = _depthImageFormat;
+
 	ImGui_ImplVulkan_Init(&init_info);
 
 	_mainDeletionQueue.push_function([=]() {
@@ -360,7 +427,9 @@ void AeroEngine::draw() {
 	clearValue.color = { {0.05f, 0.05f, 0.08f, 1.0f} };
 
 	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(_swapchainImageViews[swapchainImageIndex], &clearValue);
-	VkRenderingInfo renderInfo = vkinit::rendering_info(_windowExtent, &colorAttachment, nullptr);
+	VkRenderingAttachmentInfo depthAttachment = vkinit::depth_attachment_info(_depthImage.view);
+
+	VkRenderingInfo renderInfo = vkinit::rendering_info(_windowExtent, &colorAttachment, &depthAttachment);
 
 	vkCmdBeginRendering(cmd, &renderInfo);
 
@@ -379,7 +448,31 @@ void AeroEngine::draw() {
 	scissor.extent = _windowExtent;
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-	vkCmdDraw(cmd, 3, 1, 0, 0);
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _trianglePipeline);
+
+	if (!_renderables.empty() && _mainMeshBuffers.vertexBuffer.buffer != VK_NULL_HANDLE) {
+		// 绑定全局 Bindless 描述符集
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _trianglePipelineLayout, 0, 1, &_globalDescriptorSet, 0, nullptr);
+
+		// 绑定顶点和索引 Buffer
+		VkDeviceSize offset = 0;
+		vkCmdBindVertexBuffers(cmd, 0, 1, &_mainMeshBuffers.vertexBuffer.buffer, &offset);
+		vkCmdBindIndexBuffer(cmd, _mainMeshBuffers.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+		glm::mat4 view = glm::lookAt(glm::vec3(0.f, 1.f, 5.f), glm::vec3(0.f, 1.f, 0.f), glm::vec3(0.f, 1.f, 0.f));
+		glm::mat4 proj = glm::perspective(glm::radians(70.f), (float)_windowExtent.width / (float)_windowExtent.height, 0.1f, 10000.0f);
+		proj[1][1] *= -1;
+		glm::mat4 viewProj = proj * view;
+
+		for (const SubMesh& submesh : _renderables) {
+			MeshPushConstants pushData;
+			pushData.render_matrix = viewProj;
+			pushData.material_id = submesh.materialIndex;
+
+			vkCmdPushConstants(cmd, _trianglePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &pushData);
+			vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.firstIndex, submesh.vertexOffset, 0);
+		}
+	}
 
 	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
 
@@ -426,4 +519,421 @@ void AeroEngine::draw() {
 	VK_CHECK(vkQueuePresentKHR(_vkContext.graphicsQueue, &presentInfo));
 
 	_frameNumber++;
+}
+
+void AeroEngine::init_depth_image() {
+	VkExtent3D depthImageExtent = {
+		_windowExtent.width,
+		_windowExtent.height,
+		1
+	};
+
+	// 1. 创建 Depth Image 描述信息
+	VkImageCreateInfo dimg_info{};
+	dimg_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	dimg_info.imageType = VK_IMAGE_TYPE_2D;
+	dimg_info.format = _depthImageFormat;
+	dimg_info.extent = depthImageExtent;
+	dimg_info.mipLevels = 1;
+	dimg_info.arrayLayers = 1;
+	dimg_info.samples = VK_SAMPLE_COUNT_1_BIT;
+	dimg_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+	// 核心：告诉 Vulkan 这是用来做深度附件的
+	dimg_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+	VmaAllocationCreateInfo dimg_allocinfo{};
+	dimg_allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	dimg_allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+	// 使用 VMA 分配内存并绑定
+	VK_CHECK(vmaCreateImage(_allocator, &dimg_info, &dimg_allocinfo, &_depthImage.image, &_depthImage.allocation, nullptr));
+
+	// 2. 创建 Depth ImageView
+	VkImageViewCreateInfo view_info{};
+	view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	view_info.image = _depthImage.image;
+	view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	view_info.format = _depthImageFormat;
+	// 核心：告诉 Vulkan 视图读取的是深度切面 (Aspect)
+	view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+	view_info.subresourceRange.baseMipLevel = 0;
+	view_info.subresourceRange.levelCount = 1;
+	view_info.subresourceRange.baseArrayLayer = 0;
+	view_info.subresourceRange.layerCount = 1;
+
+	VK_CHECK(vkCreateImageView(_vkContext.device, &view_info, nullptr, &_depthImage.view));
+
+	immediate_submit([&](VkCommandBuffer cmd) {
+		VkImageMemoryBarrier barrier{};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+		barrier.image = _depthImage.image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT; // 务必指定为深度
+		barrier.subresourceRange.baseMipLevel = 0;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.baseArrayLayer = 0;
+		barrier.subresourceRange.layerCount = 1;
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+		});
+
+	// 压入全局销毁队列
+	_mainDeletionQueue.push_function([=]() {
+		vkDestroyImageView(_vkContext.device, _depthImage.view, nullptr);
+		vmaDestroyImage(_allocator, _depthImage.image, _depthImage.allocation);
+		});
+
+	std::cout << "[AeroEngine] Depth Image allocated successfully." << std::endl;
+}
+
+void AeroEngine::immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function) {
+	VkCommandBuffer cmd = _vkContext.m_uploadContext.commandBuffer;
+
+	VkCommandBufferBeginInfo cmdBeginInfo = {};
+	cmdBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	cmdBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	vkBeginCommandBuffer(cmd, &cmdBeginInfo);
+	function(cmd);
+	vkEndCommandBuffer(cmd);
+
+	VkSubmitInfo submit = {};
+	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submit.commandBufferCount = 1;
+	submit.pCommandBuffers = &cmd;
+
+	vkQueueSubmit(_vkContext.graphicsQueue, 1, &submit, _vkContext.m_uploadContext.uploadFence);
+
+	vkWaitForFences(_vkContext.device, 1, &_vkContext.m_uploadContext.uploadFence, VK_TRUE, UINT64_MAX);
+	vkResetFences(_vkContext.device, 1, &_vkContext.m_uploadContext.uploadFence);
+
+	vkResetCommandPool(_vkContext.device, _vkContext.m_uploadContext.commandPool, 0);
+}
+
+GPUMeshBuffers AeroEngine::upload_mesh_data(const SceneData& scene) {
+	GPUMeshBuffers outBuffers;
+
+	// 计算总大小
+	const size_t vertexBufferSize = scene.vertices.size() * sizeof(Vertex);
+	const size_t indexBufferSize = scene.indices.size() * sizeof(uint32_t);
+	const size_t totalBufferSize = vertexBufferSize + indexBufferSize;
+
+	VkBufferCreateInfo stagingBufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	stagingBufferInfo.size = totalBufferSize;
+	stagingBufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+	VmaAllocationCreateInfo stagingAllocInfo = {};
+	stagingAllocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+	stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+	AllocatedBuffer stagingBuffer;
+	VmaAllocationInfo stagingAllocResult;
+	VK_CHECK(vmaCreateBuffer(_allocator, &stagingBufferInfo, &stagingAllocInfo,
+		&stagingBuffer.buffer, &stagingBuffer.allocation, &stagingAllocResult));
+
+	void* mappedData = stagingAllocResult.pMappedData;
+	memcpy(mappedData, scene.vertices.data(), vertexBufferSize);
+	memcpy(static_cast<char*>(mappedData) + vertexBufferSize, scene.indices.data(), indexBufferSize);
+
+	VkBufferCreateInfo vboInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	vboInfo.size = vertexBufferSize;
+	vboInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+	VkBufferCreateInfo iboInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	iboInfo.size = indexBufferSize;
+	iboInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+	VmaAllocationCreateInfo vmaAllocInfo = {};
+	vmaAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+	VK_CHECK(vmaCreateBuffer(_allocator, &vboInfo, &vmaAllocInfo,
+		&outBuffers.vertexBuffer.buffer, &outBuffers.vertexBuffer.allocation, nullptr));
+
+	VK_CHECK(vmaCreateBuffer(_allocator, &iboInfo, &vmaAllocInfo,
+		&outBuffers.indexBuffer.buffer, &outBuffers.indexBuffer.allocation, nullptr));
+
+	immediate_submit([&](VkCommandBuffer cmd) {
+		VkBufferCopy vertexCopy = { 0, 0, vertexBufferSize };
+		vkCmdCopyBuffer(cmd, stagingBuffer.buffer, outBuffers.vertexBuffer.buffer, 1, &vertexCopy);
+
+		VkBufferCopy indexCopy = { vertexBufferSize, 0, indexBufferSize };
+		vkCmdCopyBuffer(cmd, stagingBuffer.buffer, outBuffers.indexBuffer.buffer, 1, &indexCopy);
+		});
+
+	vmaDestroyBuffer(_allocator, stagingBuffer.buffer, stagingBuffer.allocation);
+
+	return outBuffers;
+}
+
+void AeroEngine::init_bindless_descriptor() {
+	VkDescriptorSetLayoutBinding materialBind{};
+	materialBind.binding = 0;
+	materialBind.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	materialBind.descriptorCount = 1;
+	materialBind.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	VkDescriptorSetLayoutBinding textureBind{};
+	textureBind.binding = 1;
+	textureBind.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	textureBind.descriptorCount = 1024;
+	textureBind.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	VkDescriptorSetLayoutBinding bindings[]{ materialBind, textureBind };
+
+	VkDescriptorBindingFlags bindlessFlags =
+		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+
+	VkDescriptorBindingFlags bindingFlags[2] = { 0, bindlessFlags };
+
+	VkDescriptorSetLayoutBindingFlagsCreateInfo extendedInfo{};
+	extendedInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+	extendedInfo.bindingCount = 2;
+	extendedInfo.pBindingFlags = bindingFlags;
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo{};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.pNext = &extendedInfo;
+	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+	layoutInfo.bindingCount = 2;
+	layoutInfo.pBindings = bindings;
+
+	VK_CHECK(vkCreateDescriptorSetLayout(_vkContext.device, &layoutInfo, nullptr, &_globalSetLayout));
+
+	VkDescriptorPoolSize poolSizes[] = {
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024 }
+	};
+
+	VkDescriptorPoolCreateInfo poolInfo{};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+	poolInfo.maxSets = 1;
+	poolInfo.poolSizeCount = 2;
+	poolInfo.pPoolSizes = poolSizes;
+
+	VK_CHECK(vkCreateDescriptorPool(_vkContext.device, &poolInfo, nullptr, &_globalDescriptorPool));
+
+	VkDescriptorSetAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.descriptorPool = _globalDescriptorPool;
+	allocInfo.descriptorSetCount = 1;
+	allocInfo.pSetLayouts = &_globalSetLayout;
+
+	VK_CHECK(vkAllocateDescriptorSets(_vkContext.device, &allocInfo, &_globalDescriptorSet));
+
+	_mainDeletionQueue.push_function([=]() {
+		vkDestroyDescriptorPool(_vkContext.device, _globalDescriptorPool, nullptr);
+		vkDestroyDescriptorSetLayout(_vkContext.device, _globalSetLayout, nullptr);
+		});
+
+	std::cout << "[AeroEngine] Bindless Descriptor Setup Complete." << std::endl;
+}
+
+AllocatedBuffer AeroEngine::upload_material_data(const std::vector<MaterialParams>& materials) {
+	const size_t bufferSize = materials.size() * sizeof(MaterialParams);
+
+	VkBufferCreateInfo ssboInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	ssboInfo.size = bufferSize;
+	ssboInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+	VmaAllocationCreateInfo vmaAllocInfo = {};
+	vmaAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+	AllocatedBuffer materialBuffer;
+	VK_CHECK(vmaCreateBuffer(_allocator, &ssboInfo, &vmaAllocInfo,
+		&materialBuffer.buffer, &materialBuffer.allocation, nullptr));
+
+	VkBufferCreateInfo stagingInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	stagingInfo.size = bufferSize;
+	stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+	VmaAllocationCreateInfo stagingAllocInfo = {};
+	stagingAllocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+	stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+	AllocatedBuffer stagingBuffer;
+	VmaAllocationInfo stagingAllocResult;
+	VK_CHECK(vmaCreateBuffer(_allocator, &stagingInfo, &stagingAllocInfo,
+		&stagingBuffer.buffer, &stagingBuffer.allocation, &stagingAllocResult));
+
+	memcpy(stagingAllocResult.pMappedData, materials.data(), bufferSize);
+
+	immediate_submit([&](VkCommandBuffer cmd) {
+		VkBufferCopy copyRegion = { 0, 0, bufferSize };
+		vkCmdCopyBuffer(cmd, stagingBuffer.buffer, materialBuffer.buffer, 1, &copyRegion);
+		});
+
+	vmaDestroyBuffer(_allocator, stagingBuffer.buffer, stagingBuffer.allocation);
+
+	return materialBuffer;
+}
+
+void AeroEngine::update_global_descriptor_set(VkBuffer materialBuffer, size_t bufferSize) {
+	VkDescriptorBufferInfo bufferInfo{};
+	bufferInfo.buffer = materialBuffer;
+	bufferInfo.offset = 0;
+	bufferInfo.range = bufferSize;
+
+	VkWriteDescriptorSet write{};
+	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write.dstSet = _globalDescriptorSet;
+	write.dstBinding = 0; // Binding 0 是我们配置的 Material SSBO
+	write.dstArrayElement = 0;
+	write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	write.descriptorCount = 1;
+	write.pBufferInfo = &bufferInfo;
+
+	vkUpdateDescriptorSets(_vkContext.device, 1, &write, 0, nullptr);
+}
+
+AllocatedImage AeroEngine::upload_texture(void* pixels, int width, int height, VkFormat format) {
+	VkExtent3D imageExtent = { (uint32_t)width, (uint32_t)height, 1 };
+	VkDeviceSize imageSize = width * height * 4;
+
+	VkImageCreateInfo dimg_info{};
+	dimg_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	dimg_info.imageType = VK_IMAGE_TYPE_2D;
+	dimg_info.format = format;
+	dimg_info.extent = imageExtent;
+	dimg_info.mipLevels = 1;
+	dimg_info.arrayLayers = 1;
+	dimg_info.samples = VK_SAMPLE_COUNT_1_BIT;
+	dimg_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+	dimg_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+	VmaAllocationCreateInfo dimg_allocinfo{};
+	dimg_allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+	AllocatedImage newImage;
+	newImage.imageFormat = format;
+	newImage.imageExtent = imageExtent;
+	VK_CHECK(vmaCreateImage(_allocator, &dimg_info, &dimg_allocinfo,
+		&newImage.image, &newImage.allocation, nullptr));
+
+	VkBufferCreateInfo stagingInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	stagingInfo.size = imageSize;
+	stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+	VmaAllocationCreateInfo stagingAllocInfo = {};
+	stagingAllocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+	stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+	AllocatedBuffer stagingBuffer;
+	VmaAllocationInfo stagingAllocResult;
+	VK_CHECK(vmaCreateBuffer(_allocator, &stagingInfo, &stagingAllocInfo, &stagingBuffer.buffer, &stagingBuffer.allocation, &stagingAllocResult));
+
+	memcpy(stagingAllocResult.pMappedData, pixels, static_cast<size_t>(imageSize));
+
+	// 3. 异步提交：Transition Layout (Undefined -> TransferDst) -> Copy Buffer To Image -> Transition Layout (TransferDst -> ShaderReadOnly)
+	immediate_submit([&](VkCommandBuffer cmd) {
+		vkinit::transition_image(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+		// Step B: 执行拷贝
+		VkBufferImageCopy copyRegion = {};
+		copyRegion.bufferOffset = 0;
+		copyRegion.bufferRowLength = 0;
+		copyRegion.bufferImageHeight = 0;
+		copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		copyRegion.imageSubresource.mipLevel = 0;
+		copyRegion.imageSubresource.baseArrayLayer = 0;
+		copyRegion.imageSubresource.layerCount = 1;
+		copyRegion.imageExtent = imageExtent;
+
+		vkCmdCopyBufferToImage(cmd, stagingBuffer.buffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+
+		// Step C: TransferDst -> ShaderReadOnly
+		vkinit::transition_image(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		});
+
+	vmaDestroyBuffer(_allocator, stagingBuffer.buffer, stagingBuffer.allocation);
+
+	// 5. 创建 ImageView 供 Shader 采样
+	VkImageViewCreateInfo view_info{};
+	view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	view_info.image = newImage.image;
+	view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	view_info.format = format;
+	view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	view_info.subresourceRange.baseMipLevel = 0;
+	view_info.subresourceRange.levelCount = 1;
+	view_info.subresourceRange.baseArrayLayer = 0;
+	view_info.subresourceRange.layerCount = 1;
+
+	VK_CHECK(vkCreateImageView(_vkContext.device, &view_info, nullptr, &newImage.view));
+
+	return newImage;
+}
+
+void AeroEngine::update_bindless_texture(const AllocatedImage& image, uint32_t textureID) {
+	VkDescriptorImageInfo imageBufferInfo{};
+	imageBufferInfo.sampler = _defaultSamplerLinear;
+	imageBufferInfo.imageView = image.view;
+	imageBufferInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+	VkWriteDescriptorSet textureWrite{};
+	textureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	textureWrite.dstSet = _globalDescriptorSet;
+	textureWrite.dstBinding = 1; // 绑在 Binding 1 (globalTextures)
+	textureWrite.dstArrayElement = textureID; // 关键！插到数组的哪个索引
+	textureWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	textureWrite.descriptorCount = 1;
+	textureWrite.pImageInfo = &imageBufferInfo;
+
+	vkUpdateDescriptorSets(_vkContext.device, 1, &textureWrite, 0, nullptr);
+}
+
+void AeroEngine::upload_scene_data(const SceneData& scene) {
+	std::cout << "[AeroEngine] Starting scene upload to GPU..." << std::endl;
+
+	uint32_t whitePixel = 0xFFFFFFFF; // RGBA 全部为 255
+	AllocatedImage defaultTexture = upload_texture(&whitePixel, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
+	_sceneTextures.push_back(defaultTexture); // 交给现有的资源数组统一管理销毁
+
+	// 将 1024 个槽位全部初始化为安全的安全贴图
+	for (uint32_t i = 0; i < 1024; ++i) {
+		update_bindless_texture(defaultTexture, i);
+	}
+
+	// 1. 上传顶点和索引 Buffer，并存入成员变量供 draw() 使用
+	_mainMeshBuffers = upload_mesh_data(scene);
+	_renderables = scene.subMeshes;
+
+	// 2. 上传材质大数组到 SSBO
+	_materialBuffer = upload_material_data(scene.materials);
+
+	// 更新全局 Descriptor Set 的 Binding 0 (材质 SSBO)
+	update_global_descriptor_set(_materialBuffer.buffer, scene.materials.size() * sizeof(MaterialParams));
+
+	// 3. 遍历图片并上传到 GPU 的 Bindless 数组
+	int loadedTextureCount = 0;
+	for (size_t i = 0; i < scene.images.size(); i++) {
+		const LoadedImage& img = scene.images[i];
+
+		if (img.pixels != nullptr) {
+			AllocatedImage gpuImage = upload_texture(img.pixels, img.width, img.height, VK_FORMAT_R8G8B8A8_UNORM);
+
+			update_bindless_texture(gpuImage, static_cast<uint32_t>(i));
+
+			_sceneTextures.push_back(gpuImage);
+
+			stbi_image_free(img.pixels);
+			loadedTextureCount++;
+		}
+	}
+
+	_mainDeletionQueue.push_function([=]() {
+		vmaDestroyBuffer(_allocator, _mainMeshBuffers.vertexBuffer.buffer, _mainMeshBuffers.vertexBuffer.allocation);
+		vmaDestroyBuffer(_allocator, _mainMeshBuffers.indexBuffer.buffer, _mainMeshBuffers.indexBuffer.allocation);
+		vmaDestroyBuffer(_allocator, _materialBuffer.buffer, _materialBuffer.allocation);
+		for (const AllocatedImage& img : _sceneTextures) {
+			vkDestroyImageView(_vkContext.device, img.view, nullptr);
+			vmaDestroyImage(_allocator, img.image, img.allocation);
+		}
+		});
+
+	std::cout << "[AeroEngine] Successfully uploaded scene to GPU! (Textures loaded: " << loadedTextureCount << ")" << std::endl;
 }

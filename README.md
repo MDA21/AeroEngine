@@ -42,21 +42,21 @@
   - 在 CMake 中配置 Custom Command，在编译时自动调用 `glslc` 将 `.vert/.frag/.comp` 编译为 `SPIR-V` 二进制文件。
 - [x] **告别 RenderPass：**
   - 使用 Dynamic Rendering API (`vkCmdBeginRendering`) 画出第一个彩色三角形。
-- [ ] **调试基建：**
+- [x] **调试基建：**
   - 接入 Vulkan Validation Layers，封装自定义的 Debug Messenger（将警告输出到 VS 控制台）。
   - 集成 ImGui，能在画面上渲染一个 FPS 统计窗口。
 
 ### 📍 阶段 2：资产接管与无绑定架构 (Week 4 - 5)
-- [ ] **glTF 2.0 场景解析器：**
+- [x] **glTF 2.0 场景解析器：**
   - 使用 `cgltf` 解析包含层级关系（Scene Graph）的模型。
   - 提取 Vertex, Index, Normal, Tangent, UV 数据。
-- [ ] **Staging Buffer 与异步上传：**
+- [x] **Staging Buffer 与异步上传：**
   - 实现一个 UploadContext，利用专用的 Transfer Queue 将 CPU 数据拷贝至 GPU (Device Local) 显存。
-- [ ] **Bindless Architecture (无绑定架构)：**
+- [x] **Bindless Architecture (无绑定架构)：**
   - 通过 `VkPhysicalDeviceVulkan12Features` 启用 Descriptor Indexing。
   - 全局只创建一个 `VkDescriptorSet`。
   - **实现：** 将场景所有的纹理存入一个 `Texture2D textures[]` 数组；将所有材质参数存入一个巨大的 SSBO。
-- [ ] **基础前向渲染 (Forward Rendering)：**
+- [x] **基础前向渲染 (Forward Rendering)：**
   - 在 Shader 中通过传入的 `Material ID` 动态采样对应的纹理，成功渲染带有基础贴图的 3D 场景（如 Sponza）。
 
 ### 📍 阶段 3：终极杀器 —— GPU Driven 管线 (Week 6 - 8)

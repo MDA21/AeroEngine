@@ -18,6 +18,7 @@ public:
     VkPipelineDepthStencilStateCreateInfo _depthStencil;
     VkPipelineRenderingCreateInfo _renderInfo;
     VkFormat _colorAttachmentFormat;
+    VkPipelineVertexInputStateCreateInfo _vertexInputInfo;
 
     PipelineBuilder() { clear(); }
 

@@ -34,6 +34,10 @@ void VulkanContext::init(GLFWwindow* window, DeletionQueue& deletionQueue) {
     features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     features12.bufferDeviceAddress = VK_TRUE; 
     features12.descriptorIndexing = VK_TRUE;
+    features12.descriptorBindingPartiallyBound = VK_TRUE;
+    features12.runtimeDescriptorArray = VK_TRUE;
+    features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+    features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 
     vkb::PhysicalDeviceSelector selector{ vkb_inst };
     auto phys_ret = selector.set_minimum_version(1, 3)
@@ -65,7 +69,37 @@ void VulkanContext::init(GLFWwindow* window, DeletionQueue& deletionQueue) {
     graphicsQueue = vkbDevice.get_queue(vkb::QueueType::graphics).value();
     graphicsQueueFamily = vkbDevice.get_queue_index(vkb::QueueType::graphics).value();
 
+    transferQueue = vkbDevice.get_queue(vkb::QueueType::transfer).value();
+    transferQueueFamily = vkbDevice.get_queue_index(vkb::QueueType::transfer).value();
+
+    vkGetDeviceQueue(device, transferQueueFamily, 0, &transferQueue);
+
+    VkCommandPoolCreateInfo uploadPoolInfo{};
+    uploadPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    uploadPoolInfo.pNext = nullptr;
+    uploadPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    uploadPoolInfo.queueFamilyIndex = graphicsQueueFamily;
+
+    VK_CHECK(vkCreateCommandPool(device, &uploadPoolInfo, nullptr, &m_uploadContext.commandPool));
+
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.pNext = nullptr;
+    cmdAllocInfo.commandPool = m_uploadContext.commandPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    VK_CHECK(vkAllocateCommandBuffers(device, &cmdAllocInfo, &m_uploadContext.commandBuffer));
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.pNext = nullptr;
+    fenceInfo.flags = 0;
+
+    VK_CHECK(vkCreateFence(device, &fenceInfo, nullptr, &m_uploadContext.uploadFence));
+
     deletionQueue.push_function([this]() {
+        vkDestroyFence(device, m_uploadContext.uploadFence, nullptr);
+        vkDestroyCommandPool(device, m_uploadContext.commandPool, nullptr);
         vkDestroyDevice(device, nullptr);
         vkDestroySurfaceKHR(instance, surface, nullptr);
         vkb::destroy_debug_utils_messenger(instance, debugMessenger);
