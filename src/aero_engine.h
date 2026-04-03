@@ -1,6 +1,7 @@
 #pragma once
 #include "vk_types.h";
 #include "vk_context.h"
+#include "camera.h"
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
@@ -54,6 +55,8 @@ private:
 
 	FrameData& get_current_frame() { return _frames[_frameNumber % FRAME_OVERLAP]; }
 
+	void process_input();
+
 	bool _isInitialized{ false };
 	bool _stopRendering{ false };
 
@@ -106,4 +109,13 @@ private:
 	//depthImage
 	AllocatedImage _depthImage;
 	VkFormat _depthImageFormat{ VK_FORMAT_D32_SFLOAT };
+
+	//camera
+	Camera _camera{ glm::vec3(0.0f, 1.0f, 5.0f) };
+	float _deltaTime{ 0.0f };
+	float _lastFrameTime{ 0.0f };
+
+	double _lastMouseX{ 0.0 };
+	double _lastMouseY{ 0.0 };
+	bool _firstMouse{ true };
 };

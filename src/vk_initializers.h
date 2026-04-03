@@ -42,10 +42,10 @@ namespace vkinit {
 
         depthAttachment.imageView = view;
         depthAttachment.imageLayout = layout;
-        // 每次渲染前将深度清空为 1.0 (最远处)
+        // 每次渲染前将深度清空为 0.0 (reverse最远处)
         depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        depthAttachment.clearValue.depthStencil.depth = 1.0f;
+        depthAttachment.clearValue.depthStencil.depth = 0.0f;
 
         return depthAttachment;
     }
@@ -77,5 +77,27 @@ namespace vkinit {
         depInfo.pImageMemoryBarriers = &imageBarrier;
 
         vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
+
+    inline void transition_image_mip(VkCommandBuffer cmd, VkImage image, VkImageLayout currentLayout, VkImageLayout newLayout, uint32_t baseMipLevel, uint32_t levelCount = 1) {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.image = image;
+        barrier.oldLayout = currentLayout;
+        barrier.newLayout = newLayout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.subresourceRange.baseMipLevel = baseMipLevel;
+        barrier.subresourceRange.levelCount = levelCount;
+
+        // 根据 Layout 自动推导 Access Mask 和 Pipeline Stage (精简版推导)
+        barrier.srcAccessMask = (currentLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_TRANSFER_READ_BIT;
+        if (newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 }

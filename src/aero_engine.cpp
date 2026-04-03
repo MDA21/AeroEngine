@@ -9,6 +9,8 @@
 #include "gltf_loader.h"
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
+#include <cmath>
+#include <algorithm>
 
 struct MeshPushConstants {
 	glm::mat4 render_matrix;
@@ -56,8 +58,17 @@ void AeroEngine::init() {
 }
 
 void AeroEngine::run() {
+	_lastFrameTime = static_cast<float>(glfwGetTime());
+
 	while (!glfwWindowShouldClose(_window) && !_stopRendering) {
+		float currentFrameTime = static_cast<float>(glfwGetTime());
+		_deltaTime = currentFrameTime - _lastFrameTime;
+		_lastFrameTime = currentFrameTime;
+
 		glfwPollEvents();
+
+		process_input();
+
 		draw();
 	}
 }
@@ -68,6 +79,52 @@ void AeroEngine::cleanup() {
 		_mainDeletionQueue.flush();
 		_isInitialized = false;
 	}
+}
+
+void AeroEngine::process_input() {
+	// 1. 处理鼠标 (右键按住时才控制相机)
+	if (glfwGetMouseButton(_window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+		// 隐藏并锁定光标
+		glfwSetInputMode(_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
+		double xpos, ypos;
+		glfwGetCursorPos(_window, &xpos, &ypos);
+
+		if (_firstMouse) {
+			_lastMouseX = xpos;
+			_lastMouseY = ypos;
+			_firstMouse = false;
+		}
+
+		float xoffset = static_cast<float>(xpos - _lastMouseX);
+		float yoffset = static_cast<float>(ypos - _lastMouseY);
+
+		_lastMouseX = xpos;
+		_lastMouseY = ypos;
+
+		_camera.ProcessMouseMovement(xoffset, yoffset);
+	}
+	else {
+		// 松开右键，恢复光标显示，允许操作 ImGui
+		glfwSetInputMode(_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+		_firstMouse = true; // 重置标志位，防止下次右键时镜头瞬移
+	}
+
+	// 2. 处理键盘 (WASD + Space + Ctrl + Shift)
+	bool isSprint = glfwGetKey(_window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+
+	if (glfwGetKey(_window, GLFW_KEY_W) == GLFW_PRESS)
+		_camera.ProcessKeyboard(CameraMovement::FORWARD, _deltaTime, isSprint);
+	if (glfwGetKey(_window, GLFW_KEY_S) == GLFW_PRESS)
+		_camera.ProcessKeyboard(CameraMovement::BACKWARD, _deltaTime, isSprint);
+	if (glfwGetKey(_window, GLFW_KEY_A) == GLFW_PRESS)
+		_camera.ProcessKeyboard(CameraMovement::LEFT, _deltaTime, isSprint);
+	if (glfwGetKey(_window, GLFW_KEY_D) == GLFW_PRESS)
+		_camera.ProcessKeyboard(CameraMovement::RIGHT, _deltaTime, isSprint);
+	if (glfwGetKey(_window, GLFW_KEY_SPACE) == GLFW_PRESS)
+		_camera.ProcessKeyboard(CameraMovement::UP, _deltaTime, isSprint);
+	if (glfwGetKey(_window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
+		_camera.ProcessKeyboard(CameraMovement::DOWN, _deltaTime, isSprint);
 }
 
 void AeroEngine::init_window() {
@@ -96,6 +153,10 @@ void AeroEngine::init_vulkan() {
 	sampInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	sampInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	sampInfo.maxAnisotropy = 1.0f;
+
+	sampInfo.minLod = 0.0f;
+	sampInfo.maxLod = VK_LOD_CLAMP_NONE;
+	sampInfo.mipLodBias = 0.0f;
 	VK_CHECK(vkCreateSampler(_vkContext.device, &sampInfo, nullptr, &_defaultSamplerLinear));
 
 	_mainDeletionQueue.push_function([=]() {
@@ -288,7 +349,7 @@ void AeroEngine::init_pipelines() {
 
 	builder._depthStencil.depthTestEnable = VK_TRUE;
 	builder._depthStencil.depthWriteEnable = VK_TRUE;
-	builder._depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+	builder._depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
 
 	//光栅化设置：实心填充，不剔除（因为我们随便画的，防止看不见）
 	builder._rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
@@ -405,6 +466,13 @@ void AeroEngine::draw() {
 	ImGui::Separator();
 	ImGui::Text("VSync: %s", (_swapchainImageFormat == VK_PRESENT_MODE_FIFO_KHR) ? "ON (FIFO)" : "OFF (MAILBOX)");
 
+	ImGui::Separator();
+	ImGui::Text("Camera Settings");
+	ImGui::SliderFloat("Speed", &_camera.MovementSpeed, 1.0f, 50.0f);
+	ImGui::SliderFloat("Sensitivity", &_camera.MouseSensitivity, 0.01f, 1.0f);
+	ImGui::Text("Position: (%.1f, %.1f, %.1f)", _camera.Position.x, _camera.Position.y, _camera.Position.z);
+	ImGui::Text("Hold Right-Click to look around.");
+
 	ImGui::End();
 
 	ImGui::Render();
@@ -459,9 +527,9 @@ void AeroEngine::draw() {
 		vkCmdBindVertexBuffers(cmd, 0, 1, &_mainMeshBuffers.vertexBuffer.buffer, &offset);
 		vkCmdBindIndexBuffer(cmd, _mainMeshBuffers.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-		glm::mat4 view = glm::lookAt(glm::vec3(0.f, 1.f, 5.f), glm::vec3(0.f, 1.f, 0.f), glm::vec3(0.f, 1.f, 0.f));
-		glm::mat4 proj = glm::perspective(glm::radians(70.f), (float)_windowExtent.width / (float)_windowExtent.height, 0.1f, 10000.0f);
-		proj[1][1] *= -1;
+		glm::mat4 view = _camera.GetViewMatrix();
+		glm::mat4 proj = glm::perspectiveZO(glm::radians(_camera.Fov), (float)_windowExtent.width / (float)_windowExtent.height, 10000.0f, 0.1f);//reverse Z
+		proj[1][1] *= -1; // Vulkan Y轴翻转
 		glm::mat4 viewProj = proj * view;
 
 		for (const SubMesh& submesh : _renderables) {
@@ -791,6 +859,7 @@ void AeroEngine::update_global_descriptor_set(VkBuffer materialBuffer, size_t bu
 }
 
 AllocatedImage AeroEngine::upload_texture(void* pixels, int width, int height, VkFormat format) {
+	uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
 	VkExtent3D imageExtent = { (uint32_t)width, (uint32_t)height, 1 };
 	VkDeviceSize imageSize = width * height * 4;
 
@@ -799,11 +868,11 @@ AllocatedImage AeroEngine::upload_texture(void* pixels, int width, int height, V
 	dimg_info.imageType = VK_IMAGE_TYPE_2D;
 	dimg_info.format = format;
 	dimg_info.extent = imageExtent;
-	dimg_info.mipLevels = 1;
+	dimg_info.mipLevels = mipLevels;
 	dimg_info.arrayLayers = 1;
 	dimg_info.samples = VK_SAMPLE_COUNT_1_BIT;
 	dimg_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-	dimg_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	dimg_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
 	VmaAllocationCreateInfo dimg_allocinfo{};
 	dimg_allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
@@ -830,28 +899,46 @@ AllocatedImage AeroEngine::upload_texture(void* pixels, int width, int height, V
 
 	// 3. 异步提交：Transition Layout (Undefined -> TransferDst) -> Copy Buffer To Image -> Transition Layout (TransferDst -> ShaderReadOnly)
 	immediate_submit([&](VkCommandBuffer cmd) {
-		vkinit::transition_image(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		vkinit::transition_image_mip(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, mipLevels);
 
-		// Step B: 执行拷贝
 		VkBufferImageCopy copyRegion = {};
-		copyRegion.bufferOffset = 0;
-		copyRegion.bufferRowLength = 0;
-		copyRegion.bufferImageHeight = 0;
 		copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		copyRegion.imageSubresource.mipLevel = 0;
 		copyRegion.imageSubresource.baseArrayLayer = 0;
 		copyRegion.imageSubresource.layerCount = 1;
 		copyRegion.imageExtent = imageExtent;
-
 		vkCmdCopyBufferToImage(cmd, stagingBuffer.buffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
-		// Step C: TransferDst -> ShaderReadOnly
-		vkinit::transition_image(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		int32_t mipWidth = width;
+		int32_t mipHeight = height;
+
+		for (uint32_t i = 1; i < mipLevels; i++) {
+			vkinit::transition_image_mip(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i - 1, 1);
+
+			VkImageBlit blit{};
+			blit.srcOffsets[1] = { mipWidth, mipHeight, 1 };
+			blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			blit.srcSubresource.mipLevel = i - 1;
+			blit.srcSubresource.layerCount = 1;
+
+			blit.dstOffsets[1] = { mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1 };
+			blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			blit.dstSubresource.mipLevel = i;
+			blit.dstSubresource.layerCount = 1;
+
+			vkCmdBlitImage(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+			vkinit::transition_image_mip(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, i - 1, 1);
+
+			if (mipWidth > 1) mipWidth /= 2;
+			if (mipHeight > 1) mipHeight /= 2;
+		}
+
+		vkinit::transition_image_mip(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels - 1, 1);
 		});
 
 	vmaDestroyBuffer(_allocator, stagingBuffer.buffer, stagingBuffer.allocation);
 
-	// 5. 创建 ImageView 供 Shader 采样
 	VkImageViewCreateInfo view_info{};
 	view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	view_info.image = newImage.image;
@@ -859,7 +946,7 @@ AllocatedImage AeroEngine::upload_texture(void* pixels, int width, int height, V
 	view_info.format = format;
 	view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	view_info.subresourceRange.baseMipLevel = 0;
-	view_info.subresourceRange.levelCount = 1;
+	view_info.subresourceRange.levelCount = mipLevels;
 	view_info.subresourceRange.baseArrayLayer = 0;
 	view_info.subresourceRange.layerCount = 1;
 

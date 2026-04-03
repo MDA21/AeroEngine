@@ -44,11 +44,14 @@ std::optional<SceneData> GLTFLoader::load_gltf(const std::string& filePath) {
                 0.0f
             );
 
-            if (cgltfMat.pbr_metallic_roughness.base_color_texture.texture) {
-                mat.albedoTexIdx = static_cast<int32_t>(cgltfMat.pbr_metallic_roughness.base_color_texture.texture - data->textures);
+            // Base Color (Albedo)
+            if (cgltfMat.pbr_metallic_roughness.base_color_texture.texture && cgltfMat.pbr_metallic_roughness.base_color_texture.texture->image) {
+                mat.albedoTexIdx = static_cast<int32_t>(cgltfMat.pbr_metallic_roughness.base_color_texture.texture->image - data->images);
             }
-            if (cgltfMat.pbr_metallic_roughness.metallic_roughness_texture.texture) {
-                mat.pbrTexIdx = static_cast<int32_t>(cgltfMat.pbr_metallic_roughness.metallic_roughness_texture.texture - data->textures);
+
+            // Metallic Roughness (PBR)
+            if (cgltfMat.pbr_metallic_roughness.metallic_roughness_texture.texture && cgltfMat.pbr_metallic_roughness.metallic_roughness_texture.texture->image) {
+                mat.pbrTexIdx = static_cast<int32_t>(cgltfMat.pbr_metallic_roughness.metallic_roughness_texture.texture->image - data->images);
             }
         }
         else {
@@ -56,11 +59,14 @@ std::optional<SceneData> GLTFLoader::load_gltf(const std::string& filePath) {
             mat.pbrFactors = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
         }
 
-        if (cgltfMat.normal_texture.texture) {
-            mat.normalTexIdx = static_cast<int32_t>(cgltfMat.normal_texture.texture - data->textures);
+        // Normal
+        if (cgltfMat.normal_texture.texture && cgltfMat.normal_texture.texture->image) {
+            mat.normalTexIdx = static_cast<int32_t>(cgltfMat.normal_texture.texture->image - data->images);
         }
-        if (cgltfMat.emissive_texture.texture) {
-            mat.emissiveTexIdx = static_cast<int32_t>(cgltfMat.emissive_texture.texture - data->textures);
+
+        // Emissive
+        if (cgltfMat.emissive_texture.texture && cgltfMat.emissive_texture.texture->image) {
+            mat.emissiveTexIdx = static_cast<int32_t>(cgltfMat.emissive_texture.texture->image - data->images);
         }
 
         scene.materials.push_back(mat);
