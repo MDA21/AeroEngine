@@ -20,7 +20,7 @@
 - [x] **性能分析:** 下载 NVIDIA Nsight Graphics / RenderDoc (用于后续截帧调试)。
 
 ### 2. 第三方库 (建议通过 Git Submodules 管理)
-- [x] **Vulkan 拓展:** `volk` (Vulkan Meta-Loader，绕过静态链接，提升性能)。
+- [x] **Vulkan 拓展:** `volk` (Vulkan Meta-Loader，绕过静态链接，提升性能)、`VkBootstrap`。
 - [x] **内存管理:** `VMA` (VulkanMemoryAllocator，AMD 开源的工业级显存分配器)。
 - [x] **窗口系统:** `GLFW`。
 - [x] **数学库:** `GLM` (注意：与 GPU 交互时严格使用 `alignas(16)` 或以 `vec4` 替代 `vec3` 保证内存对齐)。
@@ -58,6 +58,7 @@
   - **实现：** 将场景所有的纹理存入一个 `Texture2D textures[]` 数组；将所有材质参数存入一个巨大的 SSBO。
 - [x] **基础前向渲染 (Forward Rendering)：**
   - 在 Shader 中通过传入的 `Material ID` 动态采样对应的纹理，成功渲染带有基础贴图的 3D 场景（如 Sponza）。
+- [x] **Camera封装和reverse-Z**
 
 ### 📍 阶段 3：终极杀器 —— GPU Driven 管线 (Week 6 - 8)
 - [ ] **场景数据打包 (DOD on GPU)：**
@@ -102,3 +103,6 @@
 
 ---
 > "The magic of computer graphics is that you can build the universe from scratch, provided you align your memory correctly."
+
+
+
