@@ -62,15 +62,21 @@
 
 ### 📍 阶段 3：终极杀器 —— GPU Driven 管线 (Week 6 - 8)
 - [x] **场景数据打包 (DOD on GPU)：**
+  
   - 将场景中所有实例的 `Transform` 矩阵和 `Bounding Box` 打包成一个紧凑的 SSBO (InstanceDataBuffer) 传给 GPU。（严格遵守 `std430` 和 `alignas(16)` 规范）。
 - [ ] **Two-Pass Compute 剔除 (视锥 + Hi-Z 遮挡)：**
+  
   - **Pass 1:** 视锥剔除与上一帧可见物体的 Hi-Z 遮挡剔除。
   - **Pass 2:** 生成深度金字塔 (Depth Pyramid)，对新物体进行第二遍精确剔除。
-- [ ] **Indirect Draw Buffer 生成：**
+  
+  只做了视锥剔除
+- [x] **Indirect Draw Buffer 生成：**
+  
   - 剔除通过的线程，使用 `atomicAdd` 将实例参数写入到一个 `VkDrawIndexedIndirectCommand` 结构的 Buffer 中。
-- [ ] **一键绘制 (vkCmdDrawIndexedIndirect)：**
+- [x] **一键绘制 (vkCmdDrawIndexedIndirect)：**
   - CPU 端彻底解放，仅调用一次 API 即可绘制成千上万个物体。
-- [ ] **性能验证 UI：**
+- [x] **性能验证 UI：**
+  
   - 在 ImGui 中添加 Toggle 按钮对比：CPU 提交 vs GPU 驱动提交，并展示极端的帧率差异图。
 
 ### 📍 阶段 4：3A 级视觉与材质系统 (Week 9 - 10)
