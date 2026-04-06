@@ -1,49 +1,48 @@
 #version 460
 #extension GL_EXT_nonuniform_qualifier : require
 
-layout(location = 0) in vec2 inUV;
-layout(location = 1) in vec3 inNormal;
+// 1. 接收来自 Vertex Shader 的输入
+layout (location = 0) in vec2 inUV;
+layout (location = 1) in vec3 inNormal;
+layout (location = 2) in flat uint inMaterialID; // 必须用 flat 关闭插值
 
-layout(location = 0) out vec4 outColor;
+// 2. 输出到 Framebuffer
+layout (location = 0) out vec4 outFragColor;
 
+// 3. Bindless 描述符绑定
+// Binding 0: 材质大数组 (和 C++ vk_types.h 中的 MaterialParams 严格对齐)
 struct MaterialParams {
     vec4 baseColorFactor;
-    vec4 pbrFactors; // x: roughness, y: metallic
+    vec4 pbrFactors;
     int albedoTexIdx;
     int normalTexIdx;
     int pbrTexIdx;
     int emissiveTexIdx;
 };
 
-// 我们的全局大水缸！
-layout(set = 0, binding = 0) readonly buffer MaterialBuffer {
+layout(std430, set = 0, binding = 0) readonly buffer MaterialBuffer {
     MaterialParams materials[];
-} materialData;
+};
 
+// Binding 1: 场景所有贴图数组
 layout(set = 0, binding = 1) uniform sampler2D globalTextures[];
 
-layout(push_constant) uniform constants {
-    mat4 render_matrix;
-    uint material_id;
-} PushConstants;
-
 void main() {
-    // 1. O(1) 提取当前材质
-    MaterialParams mat = materialData.materials[PushConstants.material_id];
+    // 根据顶点着色器传来的 ID 获取材质数据
+    MaterialParams mat = materials[inMaterialID];
     
-    // 2. 获取基础色因子
-    vec4 color = mat.baseColorFactor;
+    vec4 baseColor = mat.baseColorFactor;
     
-    // 3. Bindless 动态采样 (注意 nonuniformEXT 防止 GPU 线程分歧崩溃)
+    // 如果有漫反射贴图，则采样
     if (mat.albedoTexIdx >= 0) {
-        color *= texture(globalTextures[nonuniformEXT(mat.albedoTexIdx)], inUV);
+        // 工业标准：在 Bindless 架构中根据动态变量采样贴图数组时，必须加 nonuniformEXT 修饰符
+        baseColor *= texture(globalTextures[nonuniformEXT(mat.albedoTexIdx)], inUV);
     }
     
-    // 简单的环境光打底，验证法线方向
-    vec3 ambient = vec3(0.2) * color.rgb;
-    vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0));
-    float diff = max(dot(normalize(inNormal), lightDir), 0.0);
-    vec3 diffuse = diff * color.rgb;
-
-    outColor = vec4(ambient + diffuse, color.a);
+    // 基础的平行光漫反射 (Lambert)，为了让你看清模型立体感
+    vec3 N = normalize(inNormal);
+    vec3 L = normalize(vec3(0.5, 1.0, 0.5)); // 写死一个光源方向
+    float NdotL = max(dot(N, L), 0.05);      // 0.05 作为基础环境光
+    
+    outFragColor = vec4(baseColor.rgb * NdotL, baseColor.a);
 }

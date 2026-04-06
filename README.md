@@ -61,7 +61,7 @@
 - [x] **Camera封装和reverse-Z**
 
 ### 📍 阶段 3：终极杀器 —— GPU Driven 管线 (Week 6 - 8)
-- [ ] **场景数据打包 (DOD on GPU)：**
+- [x] **场景数据打包 (DOD on GPU)：**
   - 将场景中所有实例的 `Transform` 矩阵和 `Bounding Box` 打包成一个紧凑的 SSBO (InstanceDataBuffer) 传给 GPU。（严格遵守 `std430` 和 `alignas(16)` 规范）。
 - [ ] **Two-Pass Compute 剔除 (视锥 + Hi-Z 遮挡)：**
   - **Pass 1:** 视锥剔除与上一帧可见物体的 Hi-Z 遮挡剔除。

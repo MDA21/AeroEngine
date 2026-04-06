@@ -1,0 +1,83 @@
+#version 460
+
+// 设定每个 Workgroup 处理 256 个实例 (工业标准大小)
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// 接收 CPU 传来的 6 个视锥平面
+layout(push_constant) uniform ComputePushConstants {
+    vec4 planes[6];
+    uint instanceCount;
+} pushData;
+
+struct InstanceData {
+    mat4 modelMatrix;
+    vec4 aabbMin_MatID;
+    vec4 aabbMax;
+    uint indexCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint padding;
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer InstanceBuffer {
+    InstanceData instances[];
+};
+
+struct VkDrawIndexedIndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+
+layout(std430, set = 0, binding = 3) writeonly buffer IndirectDrawBuffer {
+    VkDrawIndexedIndirectCommand draws[];
+};
+
+// AABB 视锥剔除核心数学测试
+bool isVisible(vec3 aabbMin, vec3 aabbMax, mat4 transform) {
+    // 获取中心点和范围 extents
+    vec3 center = (aabbMin + aabbMax) * 0.5;
+    vec3 extents = (aabbMax - aabbMin) * 0.5;
+
+    // 将 AABB 中心转换到世界空间
+    vec3 worldCenter = (transform * vec4(center, 1.0)).xyz;
+
+    // 使用绝对值矩阵，计算 AABB 旋转后在世界空间的投影半径 (OBB->AABB approximation)
+    vec3 right = abs(vec3(transform[0][0], transform[0][1], transform[0][2]));
+    vec3 up    = abs(vec3(transform[1][0], transform[1][1], transform[1][2]));
+    vec3 forward = abs(vec3(transform[2][0], transform[2][1], transform[2][2]));
+    vec3 worldExtents = right * extents.x + up * extents.y + forward * extents.z;
+
+    // 遍历 6 个视锥面测试：
+    // 如果点到平面的距离 d < -r (完全在平面背面)，则必不可见
+    for (int i = 0; i < 6; i++) {
+        float d = dot(pushData.planes[i].xyz, worldCenter) + pushData.planes[i].w;
+        float r = dot(abs(pushData.planes[i].xyz), worldExtents);
+        if (d < -r) return false;
+    }
+    return true;
+}
+
+void main() {
+    uint gID = gl_GlobalInvocationID.x;
+    if (gID >= pushData.instanceCount) return;
+
+    InstanceData inst = instances[gID];
+    
+    // 剔除测试
+    bool visible = isVisible(inst.aabbMin_MatID.xyz, inst.aabbMax.xyz, inst.modelMatrix);
+
+    // 组装绘制指令并写入 Indirect Buffer
+    draws[gID].indexCount = inst.indexCount;
+    
+    // 核心 Trick：如果不可见，直接要求 GPU 画 0 个实例，硬件会自动忽略这条 DrawCall
+    draws[gID].instanceCount = visible ? 1 : 0; 
+    
+    draws[gID].firstIndex = inst.firstIndex;
+    draws[gID].vertexOffset = inst.vertexOffset;
+    
+    // 把自己的数组下标告诉 Vertex Shader (对应 gl_InstanceIndex)
+    draws[gID].firstInstance = gID; 
+}

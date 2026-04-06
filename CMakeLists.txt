@@ -26,6 +26,7 @@ set(SHADER_SOURCES
     ${CMAKE_SOURCE_DIR}/shaders/colored_triangle.frag
     ${CMAKE_SOURCE_DIR}/shaders/mesh.vert
     ${CMAKE_SOURCE_DIR}/shaders/mesh.frag
+    ${CMAKE_SOURCE_DIR}/shaders/culling.comp
 )
 
 set(SPIRV_FILES "")

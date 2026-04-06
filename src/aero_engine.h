@@ -43,11 +43,14 @@ private:
 
 	GPUMeshBuffers upload_mesh_data(const SceneData& scene);
 
-	AllocatedBuffer upload_material_data(const std::vector<MaterialParams>& materials);
+	AllocatedBuffer upload_ssbo_data(size_t bufferSize, const void* data);
 
 	void upload_scene_data(const SceneData& scene);
 
-	void update_global_descriptor_set(VkBuffer materialBuffer, size_t bufferSize);
+	//for test
+	void upload_scene_data_duplicate (const SceneData& scene);
+
+	void update_global_descriptor_set();
 
 	AllocatedImage upload_texture(void* pixels, int width, int height, VkFormat format);
 
@@ -59,6 +62,7 @@ private:
 
 	bool _isInitialized{ false };
 	bool _stopRendering{ false };
+	bool _useGPUDriven{ true };
 
 	VkExtent2D _windowExtent{ 1280, 720 };
 	GLFWwindow* _window{ nullptr };
@@ -84,6 +88,8 @@ private:
 	//pipelines
 	VkPipelineLayout _trianglePipelineLayout;
 	VkPipeline _trianglePipeline;
+	VkPipelineLayout _cullingPipelineLayout;
+	VkPipeline _cullingPipeline;
 
 	//imgui
 	VkDescriptorPool _imguiPool;
@@ -102,6 +108,9 @@ private:
 	//material SSBO
 	AllocatedBuffer _materialBuffer;
 
+	//
+	AllocatedBuffer _drawIndirectBuffer;
+
 	std::vector<AllocatedImage> _sceneTextures;
 
 	std::vector<SubMesh> _renderables;
@@ -118,4 +127,10 @@ private:
 	double _lastMouseX{ 0.0 };
 	double _lastMouseY{ 0.0 };
 	bool _firstMouse{ true };
+
+	//data for gpu driven
+	//instance SSBO
+	AllocatedBuffer _instanceBuffer;
+	uint32_t _instanceCount{ 0 };
+
 };

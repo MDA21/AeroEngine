@@ -8,7 +8,7 @@ void VulkanContext::init(GLFWwindow* window, DeletionQueue& deletionQueue) {
 
     vkb::InstanceBuilder builder;
     auto inst_ret = builder.set_app_name("AeroEngine")
-        .request_validation_layers(true)
+        .request_validation_layers(false)
         .require_api_version(1, 3, 0)
         .use_default_debug_messenger()
         .build();
@@ -39,9 +39,13 @@ void VulkanContext::init(GLFWwindow* window, DeletionQueue& deletionQueue) {
     features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
     features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 
+    VkPhysicalDeviceFeatures baseFeatures{};
+    baseFeatures.multiDrawIndirect = VK_TRUE;
+
     vkb::PhysicalDeviceSelector selector{ vkb_inst };
     auto phys_ret = selector.set_minimum_version(1, 3)
         .set_surface(surface)
+        .set_required_features(baseFeatures)
         .select();
 
     if (!phys_ret) {
@@ -52,6 +56,7 @@ void VulkanContext::init(GLFWwindow* window, DeletionQueue& deletionQueue) {
     vkb::PhysicalDevice physicalDevice = phys_ret.value();
     chosenGPU = physicalDevice.physical_device;
     std::cout << "[VulkanContext] Selected GPU: " << physicalDevice.name << std::endl;
+
 
     vkb::DeviceBuilder deviceBuilder{ physicalDevice };
     auto dev_ret = deviceBuilder.add_pNext(&features13)

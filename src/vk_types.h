@@ -143,3 +143,15 @@ struct GPUMeshBuffers
 	AllocatedBuffer vertexBuffer;
 	AllocatedBuffer indexBuffer;
 };
+
+//for gpu driven instanse data
+struct InstanceData
+{
+	glm::mat4 modelMatrix;
+	glm::vec4 aabbMin_MatID;
+	glm::vec4 aabbMax_Pad;
+	uint32_t indexCount;
+	uint32_t firstIndex;
+	int32_t vertexOffset;
+	uint32_t padding;
+};

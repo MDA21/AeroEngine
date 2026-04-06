@@ -11,6 +11,33 @@
 #include <glm/ext/matrix_transform.hpp>
 #include <cmath>
 #include <algorithm>
+#include <array>
+
+struct ComputePushConstants {
+	glm::vec4 planes[6];    // 6个视锥平面方程 (Ax + By + Cz + D = 0)
+	uint32_t instanceCount;
+};
+
+std::array<glm::vec4, 6> get_frustum_planes(const glm::mat4& viewProj) {
+	std::array<glm::vec4, 6> planes;
+
+	// glm 是列主序，为了套用标准行主序提取公式，我们先求转置
+	glm::mat4 M = glm::transpose(viewProj);
+
+	planes[0] = M[3] + M[0]; // Left
+	planes[1] = M[3] - M[0]; // Right
+	planes[2] = M[3] + M[1]; // Bottom
+	planes[3] = M[3] - M[1]; // Top
+	planes[4] = M[2];        // Near (在 Reverse-Z 和 Vulkan ZO 下依然适用)
+	planes[5] = M[3] - M[2]; // Far
+
+	//归一化平面法线，这样 plane.w 的物理意义就是点到原点的距离
+	for (auto& p : planes) {
+		float length = glm::length(glm::vec3(p.x, p.y, p.z));
+		p /= length;
+	}
+	return planes;
+}
 
 struct MeshPushConstants {
 	glm::mat4 render_matrix;
@@ -44,6 +71,7 @@ void AeroEngine::init() {
 	init_imgui();
 
 	std::string modelPath = "F:/VSproject/AeroEngine/assets/Sponza/glTF/Sponza.gltf";
+	//std::string modelPath = "F:/VSproject/AeroEngine/assets/Bistro/BistroExterior.gltf";
 	std::optional<SceneData> sceneOpt = GLTFLoader::load_gltf(modelPath);
 	if (sceneOpt.has_value()) {
 		upload_scene_data(sceneOpt.value());
@@ -298,7 +326,7 @@ void AeroEngine::init_pipelines() {
 
 	VkPushConstantRange pushConstant{};
 	pushConstant.offset = 0;
-	pushConstant.size = sizeof(glm::mat4) + sizeof(uint32_t); // 矩阵 + 材质ID (未来可扩展)
+	pushConstant.size = sizeof(glm::mat4);
 	pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	//创建 Pipeline Layout
@@ -331,15 +359,12 @@ void AeroEngine::init_pipelines() {
 	fragStage.pName = "main";
 	builder._shaderStages.push_back(fragStage);
 
-	//拓扑结构：三角形列表
 	builder._inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	builder._inputAssembly.primitiveRestartEnable = VK_FALSE;
 
-	// 获取顶点描述
 	auto bindingDescription = Vertex::getBindingDescription();
 	auto attributeDescriptions = Vertex::getAttributeDescriptions();
 
-	// 配置顶点输入状态
 	builder._vertexInputInfo = {};
 	builder._vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 	builder._vertexInputInfo.vertexBindingDescriptionCount = 1;
@@ -351,36 +376,65 @@ void AeroEngine::init_pipelines() {
 	builder._depthStencil.depthWriteEnable = VK_TRUE;
 	builder._depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
 
-	//光栅化设置：实心填充，不剔除（因为我们随便画的，防止看不见）
 	builder._rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
 	builder._rasterizer.lineWidth = 1.0f;
 	builder._rasterizer.cullMode = VK_CULL_MODE_NONE;
 	builder._rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
-	//多重采样：默认关闭
 	builder._multisampling.sampleShadingEnable = VK_FALSE;
 	builder._multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-	//颜色混合：覆盖模式
 	builder._colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 	builder._colorBlendAttachment.blendEnable = VK_FALSE;
 
-	// 1.3 动态渲染配置：告诉管线我们将画到什么格式的图片上
 	builder._renderInfo.colorAttachmentCount = 1;
 	builder._renderInfo.pColorAttachmentFormats = &_swapchainImageFormat;
 	builder._renderInfo.depthAttachmentFormat = _depthImageFormat;
 
-	//构建管线
 	_trianglePipeline = builder.build_pipeline(_vkContext.device);
 
-	// 4. 清理着色器模块 (编译成管线后，Shader Module 就可以销毁了)
 	vkDestroyShaderModule(_vkContext.device, triangleFragShader, nullptr);
 	vkDestroyShaderModule(_vkContext.device, triangleVertShader, nullptr);
 
-	//压入全局销毁队列
 	_mainDeletionQueue.push_function([=]() {
 		vkDestroyPipeline(_vkContext.device, _trianglePipeline, nullptr);
 		vkDestroyPipelineLayout(_vkContext.device, _trianglePipelineLayout, nullptr);
+		});
+
+	//compute culling pipeline
+	VkShaderModule computeShader;
+	if (!vkutil::load_shader_module("shaders/culling.comp.spv", _vkContext.device, &computeShader)) {
+		std::cerr << "Error when building the culling compute shader module" << std::endl;
+	}
+	VkPushConstantRange computePushConstant{};
+	computePushConstant.offset = 0;
+	computePushConstant.size = sizeof(ComputePushConstants);
+	computePushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkPipelineLayoutCreateInfo computeLayoutInfo{};
+	computeLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	computeLayoutInfo.setLayoutCount = 1;
+	computeLayoutInfo.pSetLayouts = &_globalSetLayout;
+	computeLayoutInfo.pushConstantRangeCount = 1;
+	computeLayoutInfo.pPushConstantRanges = &computePushConstant;
+
+	VK_CHECK(vkCreatePipelineLayout(_vkContext.device, &computeLayoutInfo, nullptr, &_cullingPipelineLayout));
+
+	VkComputePipelineCreateInfo computePipelineInfo{};
+	computePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	computePipelineInfo.layout = _cullingPipelineLayout;
+	computePipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	computePipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	computePipelineInfo.stage.module = computeShader;
+	computePipelineInfo.stage.pName = "main";
+
+	VK_CHECK(vkCreateComputePipelines(_vkContext.device, VK_NULL_HANDLE, 1, &computePipelineInfo, nullptr, &_cullingPipeline));
+
+	vkDestroyShaderModule(_vkContext.device, computeShader, nullptr);
+
+	_mainDeletionQueue.push_function([=]() {
+		vkDestroyPipeline(_vkContext.device, _cullingPipeline, nullptr);
+		vkDestroyPipelineLayout(_vkContext.device, _cullingPipelineLayout, nullptr);
 		});
 }
 
@@ -450,35 +504,58 @@ void AeroEngine::draw() {
 
 	ImGui::Begin("AeroEngine Debug");
 
+	// 历史帧时间数据，用于绘制折线图
+	static float frameTimes[120] = { 0 };
+	static int frameTimeOffset = 0;
+
 	static float fpsTimer = 0.0f;
 	static float displayFps = 0.0f;
 	static float displayMs = 0.0f;
 
 	fpsTimer += ImGui::GetIO().DeltaTime;
-	if (fpsTimer > 0.5f) {
+	if (fpsTimer > 1.0f) { // 刷新快一点，让图表更丝滑
 		displayFps = ImGui::GetIO().Framerate;
 		displayMs = 1000.0f / displayFps;
 		fpsTimer = 0.0f;
+
+		frameTimes[frameTimeOffset] = displayMs;
+		frameTimeOffset = (frameTimeOffset + 1) % 120;
 	}
 
 	ImGui::Text("Performance: %.3f ms/frame (%.1f FPS)", displayMs, displayFps);
-
+	ImGui::PlotLines("##FrameTime", frameTimes, 120, frameTimeOffset, "Frame Time (ms)", 0.0f, 15.0f, ImVec2(0, 80));
 	ImGui::Separator();
+
 	ImGui::Text("VSync: %s", (_swapchainImageFormat == VK_PRESENT_MODE_FIFO_KHR) ? "ON (FIFO)" : "OFF (MAILBOX)");
-
 	ImGui::Separator();
+
+	ImGui::Text("Pipeline Architecture");
+	ImGui::Checkbox("Enable GPU-Driven Rendering", &_useGPUDriven);
+	if (_useGPUDriven) {
+		ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Mode: GPU Indirect Draw + Compute Culling");
+	}
+	else {
+		ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "Mode: CPU Loop Submission (No Culling)");
+	}
+	ImGui::Separator();
+	// ------------------------------------
+
 	ImGui::Text("Camera Settings");
 	ImGui::SliderFloat("Speed", &_camera.MovementSpeed, 1.0f, 50.0f);
 	ImGui::SliderFloat("Sensitivity", &_camera.MouseSensitivity, 0.01f, 1.0f);
 	ImGui::Text("Position: (%.1f, %.1f, %.1f)", _camera.Position.x, _camera.Position.y, _camera.Position.z);
-	ImGui::Text("Hold Right-Click to look around.");
 
 	ImGui::End();
-
 	ImGui::Render();
 
 	uint32_t swapchainImageIndex;
-	VK_CHECK(vkAcquireNextImageKHR(_vkContext.device, _swapchain, 1000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex));
+	VkResult acquireResult = vkAcquireNextImageKHR(_vkContext.device, _swapchain, 1000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex);
+	if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+		return;
+	}
+	else if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+		VK_CHECK(acquireResult);
+	}
 
 	VkCommandBuffer cmd = get_current_frame()._mainCommandBuffer;
 	VK_CHECK(vkResetCommandBuffer(cmd, 0));
@@ -488,7 +565,45 @@ void AeroEngine::draw() {
 	cmdBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
 
+	// 提前计算视锥体矩阵，供 Compute 和 Graphics 共同使用
+	glm::mat4 view = _camera.GetViewMatrix();
+	glm::mat4 proj = glm::perspectiveZO(glm::radians(_camera.Fov), (float)_windowExtent.width / (float)_windowExtent.height, 10000.0f, 0.1f);
+	proj[1][1] *= -1; // Vulkan Y轴翻转
+	glm::mat4 viewProj = proj * view;
 
+	// ================= 阶段 1：Compute Culling =================
+	// 仅在开启 GPU Driven 模式时执行视锥体剔除
+	if (_instanceCount > 0 && _useGPUDriven) {
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _cullingPipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _cullingPipelineLayout, 0, 1, &_globalDescriptorSet, 0, nullptr);
+		ComputePushConstants computePush{};
+		computePush.instanceCount = _instanceCount;
+		auto planes = get_frustum_planes(viewProj);
+		for (int i = 0; i < 6; i++) {
+			computePush.planes[i] = planes[i];
+		}
+		vkCmdPushConstants(cmd, _cullingPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &computePush);
+
+		// 派发 Compute Shader (每组处理 256 个实例)
+		uint32_t groupCount = (_instanceCount + 255) / 256;
+		vkCmdDispatch(cmd, groupCount, 1, 1);
+
+		// 插入内存屏障，确保 Compute 写入完成后，Graphics 管线才读取 Indirect Buffer
+		VkBufferMemoryBarrier indirectBarrier{};
+		indirectBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		indirectBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		indirectBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+		indirectBarrier.buffer = _drawIndirectBuffer.buffer;
+		indirectBarrier.offset = 0;
+		indirectBarrier.size = VK_WHOLE_SIZE;
+
+		vkCmdPipelineBarrier(cmd,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+			0, 0, nullptr, 1, &indirectBarrier, 0, nullptr);
+	}
+
+	// ================= 阶段 2：Graphics Rendering =================
 	vkinit::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
 	VkClearValue clearValue;
@@ -496,12 +611,10 @@ void AeroEngine::draw() {
 
 	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(_swapchainImageViews[swapchainImageIndex], &clearValue);
 	VkRenderingAttachmentInfo depthAttachment = vkinit::depth_attachment_info(_depthImage.view);
-
 	VkRenderingInfo renderInfo = vkinit::rendering_info(_windowExtent, &colorAttachment, &depthAttachment);
 
 	vkCmdBeginRendering(cmd, &renderInfo);
 
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _trianglePipeline);
 	VkViewport viewport{};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
@@ -518,27 +631,40 @@ void AeroEngine::draw() {
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _trianglePipeline);
 
-	if (!_renderables.empty() && _mainMeshBuffers.vertexBuffer.buffer != VK_NULL_HANDLE) {
-		// 绑定全局 Bindless 描述符集
+	if (_instanceCount > 0 && _mainMeshBuffers.vertexBuffer.buffer != VK_NULL_HANDLE) {
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _trianglePipelineLayout, 0, 1, &_globalDescriptorSet, 0, nullptr);
 
-		// 绑定顶点和索引 Buffer
 		VkDeviceSize offset = 0;
 		vkCmdBindVertexBuffers(cmd, 0, 1, &_mainMeshBuffers.vertexBuffer.buffer, &offset);
 		vkCmdBindIndexBuffer(cmd, _mainMeshBuffers.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-		glm::mat4 view = _camera.GetViewMatrix();
-		glm::mat4 proj = glm::perspectiveZO(glm::radians(_camera.Fov), (float)_windowExtent.width / (float)_windowExtent.height, 10000.0f, 0.1f);//reverse Z
-		proj[1][1] *= -1; // Vulkan Y轴翻转
-		glm::mat4 viewProj = proj * view;
+		// 全局推送 ViewProj 矩阵
+		vkCmdPushConstants(cmd, _trianglePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(glm::mat4), &viewProj);
 
-		for (const SubMesh& submesh : _renderables) {
-			MeshPushConstants pushData;
-			pushData.render_matrix = viewProj;
-			pushData.material_id = submesh.materialIndex;
+		if (_useGPUDriven) {
+			// 一键绘制：GPU 自己去读 Indirect Buffer
+			vkCmdDrawIndexedIndirect(
+				cmd,
+				_drawIndirectBuffer.buffer,
+				0,                          // buffer 的起始偏移量
+				_instanceCount,             // draw 的最大数量
+				sizeof(VkDrawIndexedIndirectCommand) // 步长
+			);
+		}
+		else {
+			//to test 
+			for (uint32_t i = 0; i < _instanceCount; i++) {
+				// 利用取模运算，循环获取 1 个 Sponza 内的网格参数
+				const SubMesh& submesh = _renderables[i % _renderables.size()];
 
-			vkCmdPushConstants(cmd, _trianglePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &pushData);
-			vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.firstIndex, submesh.vertexOffset, 0);
+				// 参数 i 会直接映射为 Vertex Shader 里的 gl_InstanceIndex
+				vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.firstIndex, submesh.vertexOffset, i);
+			}
+
+			//for (uint32_t i = 0; i < _renderables.size(); i++) {
+			//	const SubMesh& submesh = _renderables[i];
+			//	vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.firstIndex, submesh.vertexOffset, i);
+			//}
 		}
 	}
 
@@ -547,7 +673,6 @@ void AeroEngine::draw() {
 	vkCmdEndRendering(cmd);
 
 	vkinit::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-
 
 	VK_CHECK(vkEndCommandBuffer(cmd));
 
@@ -584,7 +709,13 @@ void AeroEngine::draw() {
 	presentInfo.waitSemaphoreCount = 1;
 	presentInfo.pImageIndices = &swapchainImageIndex;
 
-	VK_CHECK(vkQueuePresentKHR(_vkContext.graphicsQueue, &presentInfo));
+	VkResult presentResult = vkQueuePresentKHR(_vkContext.graphicsQueue, &presentInfo);
+	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
+		return;
+	}
+	else if (presentResult != VK_SUCCESS) {
+		VK_CHECK(presentResult);
+	}
 
 	_frameNumber++;
 }
@@ -684,7 +815,6 @@ void AeroEngine::immediate_submit(std::function<void(VkCommandBuffer cmd)>&& fun
 GPUMeshBuffers AeroEngine::upload_mesh_data(const SceneData& scene) {
 	GPUMeshBuffers outBuffers;
 
-	// 计算总大小
 	const size_t vertexBufferSize = scene.vertices.size() * sizeof(Vertex);
 	const size_t indexBufferSize = scene.indices.size() * sizeof(uint32_t);
 	const size_t totalBufferSize = vertexBufferSize + indexBufferSize;
@@ -746,34 +876,46 @@ void AeroEngine::init_bindless_descriptor() {
 	VkDescriptorSetLayoutBinding textureBind{};
 	textureBind.binding = 1;
 	textureBind.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	textureBind.descriptorCount = 1024;
+	textureBind.descriptorCount = 4096;
 	textureBind.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	VkDescriptorSetLayoutBinding bindings[]{ materialBind, textureBind };
+	VkDescriptorSetLayoutBinding instanceBind{};
+	instanceBind.binding = 2;
+	instanceBind.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	instanceBind.descriptorCount = 1;
+	instanceBind.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkDescriptorSetLayoutBinding indirectBind{};
+	indirectBind.binding = 3;
+	indirectBind.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	indirectBind.descriptorCount = 1;
+	indirectBind.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkDescriptorSetLayoutBinding bindings[]{ materialBind, textureBind, instanceBind,indirectBind };
 
 	VkDescriptorBindingFlags bindlessFlags =
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
 
-	VkDescriptorBindingFlags bindingFlags[2] = { 0, bindlessFlags };
+	VkDescriptorBindingFlags bindingFlags[4] = { 0, bindlessFlags,0,0 };
 
 	VkDescriptorSetLayoutBindingFlagsCreateInfo extendedInfo{};
 	extendedInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-	extendedInfo.bindingCount = 2;
+	extendedInfo.bindingCount = 4;
 	extendedInfo.pBindingFlags = bindingFlags;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo{};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	layoutInfo.pNext = &extendedInfo;
 	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-	layoutInfo.bindingCount = 2;
+	layoutInfo.bindingCount = 4;
 	layoutInfo.pBindings = bindings;
 
 	VK_CHECK(vkCreateDescriptorSetLayout(_vkContext.device, &layoutInfo, nullptr, &_globalSetLayout));
 
 	VkDescriptorPoolSize poolSizes[] = {
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024 }
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096 }
 	};
 
 	VkDescriptorPoolCreateInfo poolInfo{};
@@ -801,9 +943,8 @@ void AeroEngine::init_bindless_descriptor() {
 	std::cout << "[AeroEngine] Bindless Descriptor Setup Complete." << std::endl;
 }
 
-AllocatedBuffer AeroEngine::upload_material_data(const std::vector<MaterialParams>& materials) {
-	const size_t bufferSize = materials.size() * sizeof(MaterialParams);
-
+AllocatedBuffer AeroEngine::upload_ssbo_data(size_t bufferSize, const void* data) {
+	// 注意这里第一行不用再算 bufferSize 了，直接用传进来的
 	VkBufferCreateInfo ssboInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ssboInfo.size = bufferSize;
 	ssboInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -811,9 +952,9 @@ AllocatedBuffer AeroEngine::upload_material_data(const std::vector<MaterialParam
 	VmaAllocationCreateInfo vmaAllocInfo = {};
 	vmaAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-	AllocatedBuffer materialBuffer;
+	AllocatedBuffer ssboBuffer;
 	VK_CHECK(vmaCreateBuffer(_allocator, &ssboInfo, &vmaAllocInfo,
-		&materialBuffer.buffer, &materialBuffer.allocation, nullptr));
+		&ssboBuffer.buffer, &ssboBuffer.allocation, nullptr));
 
 	VkBufferCreateInfo stagingInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	stagingInfo.size = bufferSize;
@@ -828,34 +969,64 @@ AllocatedBuffer AeroEngine::upload_material_data(const std::vector<MaterialParam
 	VK_CHECK(vmaCreateBuffer(_allocator, &stagingInfo, &stagingAllocInfo,
 		&stagingBuffer.buffer, &stagingBuffer.allocation, &stagingAllocResult));
 
-	memcpy(stagingAllocResult.pMappedData, materials.data(), bufferSize);
+	// 使用传入的 data 指针进行拷贝
+	memcpy(stagingAllocResult.pMappedData, data, bufferSize);
 
 	immediate_submit([&](VkCommandBuffer cmd) {
 		VkBufferCopy copyRegion = { 0, 0, bufferSize };
-		vkCmdCopyBuffer(cmd, stagingBuffer.buffer, materialBuffer.buffer, 1, &copyRegion);
+		vkCmdCopyBuffer(cmd, stagingBuffer.buffer, ssboBuffer.buffer, 1, &copyRegion);
 		});
 
 	vmaDestroyBuffer(_allocator, stagingBuffer.buffer, stagingBuffer.allocation);
 
-	return materialBuffer;
+	return ssboBuffer;
 }
 
-void AeroEngine::update_global_descriptor_set(VkBuffer materialBuffer, size_t bufferSize) {
-	VkDescriptorBufferInfo bufferInfo{};
-	bufferInfo.buffer = materialBuffer;
-	bufferInfo.offset = 0;
-	bufferInfo.range = bufferSize;
+void AeroEngine::update_global_descriptor_set() {
+	VkDescriptorBufferInfo matBufferInfo{};
+	matBufferInfo.buffer = _materialBuffer.buffer;
+	matBufferInfo.offset = 0;
+	matBufferInfo.range = VK_WHOLE_SIZE;
 
-	VkWriteDescriptorSet write{};
-	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write.dstSet = _globalDescriptorSet;
-	write.dstBinding = 0; // Binding 0 是我们配置的 Material SSBO
-	write.dstArrayElement = 0;
-	write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	write.descriptorCount = 1;
-	write.pBufferInfo = &bufferInfo;
+	VkWriteDescriptorSet matWrite{};
+	matWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	matWrite.dstSet = _globalDescriptorSet;
+	matWrite.dstBinding = 0; //binding 1 for material SSBO
+	matWrite.dstArrayElement = 0;
+	matWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	matWrite.descriptorCount = 1;
+	matWrite.pBufferInfo = &matBufferInfo;
 
-	vkUpdateDescriptorSets(_vkContext.device, 1, &write, 0, nullptr);
+	VkDescriptorBufferInfo instBufferInfo{};
+	instBufferInfo.buffer = _instanceBuffer.buffer;
+	instBufferInfo.offset = 0;
+	instBufferInfo.range = VK_WHOLE_SIZE;
+
+	VkWriteDescriptorSet instWrite{};
+	instWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	instWrite.dstSet = _globalDescriptorSet;
+	instWrite.dstBinding = 2; //binding 2 for instance SSBO;
+	instWrite.dstArrayElement = 0;
+	instWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	instWrite.descriptorCount = 1;
+	instWrite.pBufferInfo = &instBufferInfo;
+
+	VkDescriptorBufferInfo indirectBufferInfo{};
+	indirectBufferInfo.buffer = _drawIndirectBuffer.buffer;
+	indirectBufferInfo.offset = 0;
+	indirectBufferInfo.range = VK_WHOLE_SIZE;
+
+	VkWriteDescriptorSet indirectWrite{};
+	indirectWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	indirectWrite.dstSet = _globalDescriptorSet;
+	indirectWrite.dstBinding = 3;
+	indirectWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	indirectWrite.descriptorCount = 1;
+	indirectWrite.pBufferInfo = &indirectBufferInfo;
+
+	// 修改：提交 3 个写入操作
+	VkWriteDescriptorSet writes[] = { matWrite, instWrite, indirectWrite };
+	vkUpdateDescriptorSets(_vkContext.device, 3, writes, 0, nullptr);
 }
 
 AllocatedImage AeroEngine::upload_texture(void* pixels, int width, int height, VkFormat format) {
@@ -973,6 +1144,90 @@ void AeroEngine::update_bindless_texture(const AllocatedImage& image, uint32_t t
 	vkUpdateDescriptorSets(_vkContext.device, 1, &textureWrite, 0, nullptr);
 }
 
+//void AeroEngine::upload_scene_data(const SceneData& scene) {
+//	std::cout << "[AeroEngine] Starting scene upload to GPU..." << std::endl;
+//
+//	uint32_t whitePixel = 0xFFFFFFFF; // RGBA 全部为 255
+//	AllocatedImage defaultTexture = upload_texture(&whitePixel, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
+//	_sceneTextures.push_back(defaultTexture); // 交给现有的资源数组统一管理销毁
+//
+//	// 将 1024 个槽位全部初始化为安全的安全贴图
+//	for (uint32_t i = 0; i < 4096; ++i) {
+//		update_bindless_texture(defaultTexture, i);
+//	}
+//
+//	_mainMeshBuffers = upload_mesh_data(scene);
+//	_renderables = scene.subMeshes;
+//
+//	_materialBuffer = upload_ssbo_data(scene.materials.size() * sizeof(MaterialParams), scene.materials.data());
+//
+//	// 更新全局 Descriptor Set 的 Binding 0 (材质 SSBO)
+//	_instanceCount = static_cast<uint32_t>(scene.subMeshes.size());
+//	std::vector<InstanceData> instances(_instanceCount);
+//	for (size_t i = 0; i < _instanceCount; ++i) {
+//		const SubMesh& mesh = scene.subMeshes[i];
+//		instances[i].modelMatrix = glm::mat4(1.0f); // 当前 glTF 解析器还未提取节点 Transform，先填单位阵
+//
+//		//利用 float 存储 int，在 Shader 里用 floatBitsToUint 转回来，保证 vec4 对齐
+//		float matIDAsFloat;
+//		uint32_t matID = mesh.materialIndex;
+//		memcpy(&matIDAsFloat, &matID, sizeof(float));
+//
+//		instances[i].aabbMin_MatID = glm::vec4(mesh.aabbMin, matIDAsFloat);
+//		instances[i].aabbMax_Pad = glm::vec4(mesh.aabbMax, 0.0f);
+//		instances[i].indexCount = mesh.indexCount;
+//		instances[i].firstIndex = mesh.firstIndex;
+//		instances[i].vertexOffset = mesh.vertexOffset;
+//	}
+//
+//	_instanceBuffer = upload_ssbo_data(instances.size() * sizeof(InstanceData), instances.data());
+//
+//	VkBufferCreateInfo indirectInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+//	indirectInfo.size = _instanceCount * sizeof(VkDrawIndexedIndirectCommand);
+//	indirectInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+//
+//	VmaAllocationCreateInfo indirectAllocInfo = {};
+//	indirectAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+//
+//	VK_CHECK(vmaCreateBuffer(_allocator, &indirectInfo, &indirectAllocInfo,
+//		&_drawIndirectBuffer.buffer, &_drawIndirectBuffer.allocation, nullptr));
+//
+//	// 更新全局 Descriptor Set 的 Binding 0 (材质) 和 Binding 2 (Instance)
+//	update_global_descriptor_set();
+//
+//	//遍历图片并上传到 GPU 的 Bindless 数组
+//	int loadedTextureCount = 0;
+//	for (size_t i = 0; i < scene.images.size(); i++) {
+//		const LoadedImage& img = scene.images[i];
+//
+//		if (img.pixels != nullptr) {
+//			AllocatedImage gpuImage = upload_texture(img.pixels, img.width, img.height, VK_FORMAT_R8G8B8A8_UNORM);
+//
+//			update_bindless_texture(gpuImage, static_cast<uint32_t>(i));
+//
+//			_sceneTextures.push_back(gpuImage);
+//
+//			stbi_image_free(img.pixels);
+//			loadedTextureCount++;
+//		}
+//	}
+//
+//	_mainDeletionQueue.push_function([=]() {
+//		vmaDestroyBuffer(_allocator, _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
+//		vmaDestroyBuffer(_allocator, _mainMeshBuffers.vertexBuffer.buffer, _mainMeshBuffers.vertexBuffer.allocation);
+//		vmaDestroyBuffer(_allocator, _mainMeshBuffers.indexBuffer.buffer, _mainMeshBuffers.indexBuffer.allocation);
+//		vmaDestroyBuffer(_allocator, _materialBuffer.buffer, _materialBuffer.allocation);
+//		vmaDestroyBuffer(_allocator, _instanceBuffer.buffer, _instanceBuffer.allocation);
+//		for (const AllocatedImage& img : _sceneTextures) {
+//			vkDestroyImageView(_vkContext.device, img.view, nullptr);
+//			vmaDestroyImage(_allocator, img.image, img.allocation);
+//		}
+//		});
+//
+//	std::cout << "[AeroEngine] Successfully uploaded scene to GPU! (Textures loaded: " << loadedTextureCount << ")" << std::endl;
+//}
+
+//to test gpu culling, I duplicated 10 sponza scenes
 void AeroEngine::upload_scene_data(const SceneData& scene) {
 	std::cout << "[AeroEngine] Starting scene upload to GPU..." << std::endl;
 
@@ -980,22 +1235,58 @@ void AeroEngine::upload_scene_data(const SceneData& scene) {
 	AllocatedImage defaultTexture = upload_texture(&whitePixel, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
 	_sceneTextures.push_back(defaultTexture); // 交给现有的资源数组统一管理销毁
 
-	// 将 1024 个槽位全部初始化为安全的安全贴图
-	for (uint32_t i = 0; i < 1024; ++i) {
+	for (uint32_t i = 0; i < 4096; ++i) {
 		update_bindless_texture(defaultTexture, i);
 	}
 
-	// 1. 上传顶点和索引 Buffer，并存入成员变量供 draw() 使用
 	_mainMeshBuffers = upload_mesh_data(scene);
 	_renderables = scene.subMeshes;
 
-	// 2. 上传材质大数组到 SSBO
-	_materialBuffer = upload_material_data(scene.materials);
+	_materialBuffer = upload_ssbo_data(scene.materials.size() * sizeof(MaterialParams), scene.materials.data());
 
 	// 更新全局 Descriptor Set 的 Binding 0 (材质 SSBO)
-	update_global_descriptor_set(_materialBuffer.buffer, scene.materials.size() * sizeof(MaterialParams));
+	_instanceCount = static_cast<uint32_t>(scene.subMeshes.size())*100;
+	std::vector<InstanceData> instances(_instanceCount);
 
-	// 3. 遍历图片并上传到 GPU 的 Bindless 数组
+	int gridDim = 10;
+	float spacing = 5000.0f; // 每个 Sponza 之间的间距
+
+	for (int x = 0; x < gridDim; x++) {
+		for (int z = 0; z < gridDim; z++) {
+			for (size_t i = 0; i < scene.subMeshes.size(); i++) {
+				int index = (x * gridDim + z) * scene.subMeshes.size() + i;
+				const SubMesh& mesh = scene.subMeshes[i];
+
+				glm::mat4 transform = glm::translate(glm::mat4(1.0f), glm::vec3(x * spacing, 0.0f, z * spacing));
+				instances[index].modelMatrix = transform;
+
+				float matIDAsFloat;
+				uint32_t matID = mesh.materialIndex;
+				memcpy(&matIDAsFloat, &matID, sizeof(float));
+
+				instances[index].aabbMin_MatID = glm::vec4(mesh.aabbMin, matIDAsFloat);
+				instances[index].aabbMax_Pad = glm::vec4(mesh.aabbMax, 0.0f);
+				instances[index].indexCount = mesh.indexCount;
+				instances[index].firstIndex = mesh.firstIndex;
+				instances[index].vertexOffset = mesh.vertexOffset;
+			}
+		}
+	}
+
+	_instanceBuffer = upload_ssbo_data(instances.size() * sizeof(InstanceData), instances.data());
+
+	VkBufferCreateInfo indirectInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	indirectInfo.size = _instanceCount * sizeof(VkDrawIndexedIndirectCommand);
+	indirectInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+	VmaAllocationCreateInfo indirectAllocInfo = {};
+	indirectAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+	VK_CHECK(vmaCreateBuffer(_allocator, &indirectInfo, &indirectAllocInfo,
+		&_drawIndirectBuffer.buffer, &_drawIndirectBuffer.allocation, nullptr));
+
+	update_global_descriptor_set();
+
 	int loadedTextureCount = 0;
 	for (size_t i = 0; i < scene.images.size(); i++) {
 		const LoadedImage& img = scene.images[i];
@@ -1013,9 +1304,11 @@ void AeroEngine::upload_scene_data(const SceneData& scene) {
 	}
 
 	_mainDeletionQueue.push_function([=]() {
+		vmaDestroyBuffer(_allocator, _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
 		vmaDestroyBuffer(_allocator, _mainMeshBuffers.vertexBuffer.buffer, _mainMeshBuffers.vertexBuffer.allocation);
 		vmaDestroyBuffer(_allocator, _mainMeshBuffers.indexBuffer.buffer, _mainMeshBuffers.indexBuffer.allocation);
 		vmaDestroyBuffer(_allocator, _materialBuffer.buffer, _materialBuffer.allocation);
+		vmaDestroyBuffer(_allocator, _instanceBuffer.buffer, _instanceBuffer.allocation);
 		for (const AllocatedImage& img : _sceneTextures) {
 			vkDestroyImageView(_vkContext.device, img.view, nullptr);
 			vmaDestroyImage(_allocator, img.image, img.allocation);
