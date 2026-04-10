@@ -64,7 +64,7 @@ add_executable(${PROJECT_NAME}
     src/vk_types.h
  "src/vk_context.cpp" "src/vk_context.h" "src/vk_types.cpp" "src/vk_initializers.cpp" "src/vk_initializers.h" "src/vk_pipelines.h" "src/vk_pipelines.cpp"
  ${IMGUI_SOURCES}
- "src/gltf_loader.h" "src/gltf_loader.cpp" "src/camera.h" "src/camera.cpp")
+ "src/gltf_loader.h" "src/gltf_loader.cpp" "src/camera.h" "src/camera.cpp" "src/Core/Window.h")
 
 target_compile_definitions(AeroEngine PRIVATE IMGUI_IMPL_VULKAN_USE_VOLK)
 
