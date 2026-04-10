@@ -1,5 +1,4 @@
 #include "aero_engine.h"
-#include <GLFW/glfw3.h>
 #include <iostream>
 #include <optional>
 #include <VkBootstrap.h>
@@ -12,6 +11,9 @@
 #include <cmath>
 #include <algorithm>
 #include <array>
+
+
+#include "Core/KeyCodes.h"
 
 struct ComputePushConstants {
 	glm::vec4 planes[6];    // 6个视锥平面方程 (Ax + By + Cz + D = 0)
@@ -50,7 +52,10 @@ AeroEngine& AeroEngine::Get() {
 }
 
 void AeroEngine::init() {
-	init_window();
+
+	_window = std::make_unique<Aero::Window>(Aero::Window::Specs{ 1280, 720, "AeroEngine v0.1" });
+
+	_vkContext.init(_window->handle(), _mainDeletionQueue);
 
 	init_vulkan();
 
@@ -86,17 +91,10 @@ void AeroEngine::init() {
 }
 
 void AeroEngine::run() {
-	_lastFrameTime = static_cast<float>(glfwGetTime());
 
-	while (!glfwWindowShouldClose(_window) && !_stopRendering) {
-		float currentFrameTime = static_cast<float>(glfwGetTime());
-		_deltaTime = currentFrameTime - _lastFrameTime;
-		_lastFrameTime = currentFrameTime;
-
-		glfwPollEvents();
-
+	while (!_window->should_close()) {
+		_window->poll_events();
 		process_input();
-
 		draw();
 	}
 }
@@ -110,67 +108,31 @@ void AeroEngine::cleanup() {
 }
 
 void AeroEngine::process_input() {
-	// 1. 处理鼠标 (右键按住时才控制相机)
-	if (glfwGetMouseButton(_window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
-		// 隐藏并锁定光标
-		glfwSetInputMode(_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	float dt = _window->get_delta_time();
+	bool isSprint = _window->is_key_down(Aero::Key::LeftShift);
 
-		double xpos, ypos;
-		glfwGetCursorPos(_window, &xpos, &ypos);
+	// 处理相机移动
+	if (_window->is_key_down(Aero::Key::W)) _camera.ProcessKeyboard(CameraMovement::FORWARD, dt, isSprint);
+	if (_window->is_key_down(Aero::Key::S)) _camera.ProcessKeyboard(CameraMovement::BACKWARD, dt, isSprint);
+	if (_window->is_key_down(Aero::Key::A)) _camera.ProcessKeyboard(CameraMovement::LEFT, dt, isSprint);
+	if (_window->is_key_down(Aero::Key::D)) _camera.ProcessKeyboard(CameraMovement::RIGHT, dt, isSprint);
+	if (_window->is_key_down(Aero::Key::Space)) _camera.ProcessKeyboard(CameraMovement::UP, dt, isSprint);
+	if (_window->is_key_down(Aero::Key::LeftControl)) _camera.ProcessKeyboard(CameraMovement::DOWN, dt, isSprint);
 
-		if (_firstMouse) {
-			_lastMouseX = xpos;
-			_lastMouseY = ypos;
-			_firstMouse = false;
-		}
 
-		float xoffset = static_cast<float>(xpos - _lastMouseX);
-		float yoffset = static_cast<float>(ypos - _lastMouseY);
-
-		_lastMouseX = xpos;
-		_lastMouseY = ypos;
-
-		_camera.ProcessMouseMovement(xoffset, yoffset);
+	// 处理鼠标视角
+	if (_window->is_mouse_button_down(Aero::Mouse::Right)) {
+		_window->set_cursor_mode(true); // 锁定
+		glm::vec2 delta = _window->get_mouse_delta();
+		_camera.ProcessMouseMovement(delta.x, delta.y);
 	}
 	else {
-		// 松开右键，恢复光标显示，允许操作 ImGui
-		glfwSetInputMode(_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-		_firstMouse = true; // 重置标志位，防止下次右键时镜头瞬移
+		_window->set_cursor_mode(false); // 释放
 	}
-
-	// 2. 处理键盘 (WASD + Space + Ctrl + Shift)
-	bool isSprint = glfwGetKey(_window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
-
-	if (glfwGetKey(_window, GLFW_KEY_W) == GLFW_PRESS)
-		_camera.ProcessKeyboard(CameraMovement::FORWARD, _deltaTime, isSprint);
-	if (glfwGetKey(_window, GLFW_KEY_S) == GLFW_PRESS)
-		_camera.ProcessKeyboard(CameraMovement::BACKWARD, _deltaTime, isSprint);
-	if (glfwGetKey(_window, GLFW_KEY_A) == GLFW_PRESS)
-		_camera.ProcessKeyboard(CameraMovement::LEFT, _deltaTime, isSprint);
-	if (glfwGetKey(_window, GLFW_KEY_D) == GLFW_PRESS)
-		_camera.ProcessKeyboard(CameraMovement::RIGHT, _deltaTime, isSprint);
-	if (glfwGetKey(_window, GLFW_KEY_SPACE) == GLFW_PRESS)
-		_camera.ProcessKeyboard(CameraMovement::UP, _deltaTime, isSprint);
-	if (glfwGetKey(_window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
-		_camera.ProcessKeyboard(CameraMovement::DOWN, _deltaTime, isSprint);
-}
-
-void AeroEngine::init_window() {
-	glfwInit();
-	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-
-	_window = glfwCreateWindow(_windowExtent.width, _windowExtent.height, "AeroEngine", nullptr, nullptr);
-
-	_mainDeletionQueue.push_function([this]() {
-		glfwDestroyWindow(_window);
-		glfwTerminate();
-		std::cout << "[AeroEngine] Window destroyed." << std::endl;
-		});
 }
 
 void AeroEngine::init_vulkan() {
-	_vkContext.init(_window, _mainDeletionQueue);
+	_vkContext.init(_window->handle(), _mainDeletionQueue);
 
 	VkSamplerCreateInfo sampInfo{};
 	sampInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -198,7 +160,7 @@ void AeroEngine::init_swapchain() {
 	vkb::Swapchain vkbSwapchain = swapchainBuilder
 		.use_default_format_selection()
 		.set_desired_present_mode(VK_PRESENT_MODE_MAILBOX_KHR)
-		.set_desired_extent(_windowExtent.width, _windowExtent.height)
+		.set_desired_extent(_window->width(), _window->height())
 		.build()
 		.value();
 
@@ -463,7 +425,7 @@ void AeroEngine::init_imgui() {
 	VK_CHECK(vkCreateDescriptorPool(_vkContext.device, &pool_info, nullptr, &_imguiPool));
 
 	ImGui::CreateContext();
-	ImGui_ImplGlfw_InitForVulkan(_window, true);
+	ImGui_ImplGlfw_InitForVulkan(_window->handle(), true);
 
 	ImGui_ImplVulkan_InitInfo init_info{};
 	init_info.Instance = _vkContext.instance;
@@ -567,7 +529,7 @@ void AeroEngine::draw() {
 
 	// 提前计算视锥体矩阵，供 Compute 和 Graphics 共同使用
 	glm::mat4 view = _camera.GetViewMatrix();
-	glm::mat4 proj = glm::perspectiveZO(glm::radians(_camera.Fov), (float)_windowExtent.width / (float)_windowExtent.height, 10000.0f, 0.1f);
+	glm::mat4 proj = glm::perspectiveZO(glm::radians(_camera.Fov), (float)_window->width() / (float)_window->height(), 10000.0f, 0.1f);
 	proj[1][1] *= -1; // Vulkan Y轴翻转
 	glm::mat4 viewProj = proj * view;
 
@@ -608,25 +570,26 @@ void AeroEngine::draw() {
 
 	VkClearValue clearValue;
 	clearValue.color = { {0.05f, 0.05f, 0.08f, 1.0f} };
+	VkExtent2D currentExtent = { _window->width(), _window->height() };
 
 	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(_swapchainImageViews[swapchainImageIndex], &clearValue);
 	VkRenderingAttachmentInfo depthAttachment = vkinit::depth_attachment_info(_depthImage.view);
-	VkRenderingInfo renderInfo = vkinit::rendering_info(_windowExtent, &colorAttachment, &depthAttachment);
+	VkRenderingInfo renderInfo = vkinit::rendering_info(currentExtent, &colorAttachment, &depthAttachment);
 
 	vkCmdBeginRendering(cmd, &renderInfo);
 
 	VkViewport viewport{};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
-	viewport.width = (float)_windowExtent.width;
-	viewport.height = (float)_windowExtent.height;
+	viewport.width = (float)currentExtent.width;
+	viewport.height = (float)currentExtent.height;
 	viewport.minDepth = 0.0f;
 	viewport.maxDepth = 1.0f;
 	vkCmdSetViewport(cmd, 0, 1, &viewport);
 
 	VkRect2D scissor{};
 	scissor.offset = { 0, 0 };
-	scissor.extent = _windowExtent;
+	scissor.extent = currentExtent;
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _trianglePipeline);
@@ -722,8 +685,8 @@ void AeroEngine::draw() {
 
 void AeroEngine::init_depth_image() {
 	VkExtent3D depthImageExtent = {
-		_windowExtent.width,
-		_windowExtent.height,
+		_window->width(),
+		_window->height(),
 		1
 	};
 
@@ -1144,90 +1107,6 @@ void AeroEngine::update_bindless_texture(const AllocatedImage& image, uint32_t t
 	vkUpdateDescriptorSets(_vkContext.device, 1, &textureWrite, 0, nullptr);
 }
 
-//void AeroEngine::upload_scene_data(const SceneData& scene) {
-//	std::cout << "[AeroEngine] Starting scene upload to GPU..." << std::endl;
-//
-//	uint32_t whitePixel = 0xFFFFFFFF; // RGBA 全部为 255
-//	AllocatedImage defaultTexture = upload_texture(&whitePixel, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
-//	_sceneTextures.push_back(defaultTexture); // 交给现有的资源数组统一管理销毁
-//
-//	// 将 1024 个槽位全部初始化为安全的安全贴图
-//	for (uint32_t i = 0; i < 4096; ++i) {
-//		update_bindless_texture(defaultTexture, i);
-//	}
-//
-//	_mainMeshBuffers = upload_mesh_data(scene);
-//	_renderables = scene.subMeshes;
-//
-//	_materialBuffer = upload_ssbo_data(scene.materials.size() * sizeof(MaterialParams), scene.materials.data());
-//
-//	// 更新全局 Descriptor Set 的 Binding 0 (材质 SSBO)
-//	_instanceCount = static_cast<uint32_t>(scene.subMeshes.size());
-//	std::vector<InstanceData> instances(_instanceCount);
-//	for (size_t i = 0; i < _instanceCount; ++i) {
-//		const SubMesh& mesh = scene.subMeshes[i];
-//		instances[i].modelMatrix = glm::mat4(1.0f); // 当前 glTF 解析器还未提取节点 Transform，先填单位阵
-//
-//		//利用 float 存储 int，在 Shader 里用 floatBitsToUint 转回来，保证 vec4 对齐
-//		float matIDAsFloat;
-//		uint32_t matID = mesh.materialIndex;
-//		memcpy(&matIDAsFloat, &matID, sizeof(float));
-//
-//		instances[i].aabbMin_MatID = glm::vec4(mesh.aabbMin, matIDAsFloat);
-//		instances[i].aabbMax_Pad = glm::vec4(mesh.aabbMax, 0.0f);
-//		instances[i].indexCount = mesh.indexCount;
-//		instances[i].firstIndex = mesh.firstIndex;
-//		instances[i].vertexOffset = mesh.vertexOffset;
-//	}
-//
-//	_instanceBuffer = upload_ssbo_data(instances.size() * sizeof(InstanceData), instances.data());
-//
-//	VkBufferCreateInfo indirectInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-//	indirectInfo.size = _instanceCount * sizeof(VkDrawIndexedIndirectCommand);
-//	indirectInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-//
-//	VmaAllocationCreateInfo indirectAllocInfo = {};
-//	indirectAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-//
-//	VK_CHECK(vmaCreateBuffer(_allocator, &indirectInfo, &indirectAllocInfo,
-//		&_drawIndirectBuffer.buffer, &_drawIndirectBuffer.allocation, nullptr));
-//
-//	// 更新全局 Descriptor Set 的 Binding 0 (材质) 和 Binding 2 (Instance)
-//	update_global_descriptor_set();
-//
-//	//遍历图片并上传到 GPU 的 Bindless 数组
-//	int loadedTextureCount = 0;
-//	for (size_t i = 0; i < scene.images.size(); i++) {
-//		const LoadedImage& img = scene.images[i];
-//
-//		if (img.pixels != nullptr) {
-//			AllocatedImage gpuImage = upload_texture(img.pixels, img.width, img.height, VK_FORMAT_R8G8B8A8_UNORM);
-//
-//			update_bindless_texture(gpuImage, static_cast<uint32_t>(i));
-//
-//			_sceneTextures.push_back(gpuImage);
-//
-//			stbi_image_free(img.pixels);
-//			loadedTextureCount++;
-//		}
-//	}
-//
-//	_mainDeletionQueue.push_function([=]() {
-//		vmaDestroyBuffer(_allocator, _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
-//		vmaDestroyBuffer(_allocator, _mainMeshBuffers.vertexBuffer.buffer, _mainMeshBuffers.vertexBuffer.allocation);
-//		vmaDestroyBuffer(_allocator, _mainMeshBuffers.indexBuffer.buffer, _mainMeshBuffers.indexBuffer.allocation);
-//		vmaDestroyBuffer(_allocator, _materialBuffer.buffer, _materialBuffer.allocation);
-//		vmaDestroyBuffer(_allocator, _instanceBuffer.buffer, _instanceBuffer.allocation);
-//		for (const AllocatedImage& img : _sceneTextures) {
-//			vkDestroyImageView(_vkContext.device, img.view, nullptr);
-//			vmaDestroyImage(_allocator, img.image, img.allocation);
-//		}
-//		});
-//
-//	std::cout << "[AeroEngine] Successfully uploaded scene to GPU! (Textures loaded: " << loadedTextureCount << ")" << std::endl;
-//}
-
-//to test gpu culling, I duplicated 10 sponza scenes
 void AeroEngine::upload_scene_data(const SceneData& scene) {
 	std::cout << "[AeroEngine] Starting scene upload to GPU..." << std::endl;
 
@@ -1235,6 +1114,7 @@ void AeroEngine::upload_scene_data(const SceneData& scene) {
 	AllocatedImage defaultTexture = upload_texture(&whitePixel, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
 	_sceneTextures.push_back(defaultTexture); // 交给现有的资源数组统一管理销毁
 
+	// 将 1024 个槽位全部初始化为安全的安全贴图
 	for (uint32_t i = 0; i < 4096; ++i) {
 		update_bindless_texture(defaultTexture, i);
 	}
@@ -1245,32 +1125,22 @@ void AeroEngine::upload_scene_data(const SceneData& scene) {
 	_materialBuffer = upload_ssbo_data(scene.materials.size() * sizeof(MaterialParams), scene.materials.data());
 
 	// 更新全局 Descriptor Set 的 Binding 0 (材质 SSBO)
-	_instanceCount = static_cast<uint32_t>(scene.subMeshes.size())*100;
+	_instanceCount = static_cast<uint32_t>(scene.subMeshes.size());
 	std::vector<InstanceData> instances(_instanceCount);
+	for (size_t i = 0; i < _instanceCount; ++i) {
+		const SubMesh& mesh = scene.subMeshes[i];
+		instances[i].modelMatrix = glm::mat4(1.0f); // 当前 glTF 解析器还未提取节点 Transform，先填单位阵
 
-	int gridDim = 10;
-	float spacing = 5000.0f; // 每个 Sponza 之间的间距
+		//利用 float 存储 int，在 Shader 里用 floatBitsToUint 转回来，保证 vec4 对齐
+		float matIDAsFloat;
+		uint32_t matID = mesh.materialIndex;
+		memcpy(&matIDAsFloat, &matID, sizeof(float));
 
-	for (int x = 0; x < gridDim; x++) {
-		for (int z = 0; z < gridDim; z++) {
-			for (size_t i = 0; i < scene.subMeshes.size(); i++) {
-				int index = (x * gridDim + z) * scene.subMeshes.size() + i;
-				const SubMesh& mesh = scene.subMeshes[i];
-
-				glm::mat4 transform = glm::translate(glm::mat4(1.0f), glm::vec3(x * spacing, 0.0f, z * spacing));
-				instances[index].modelMatrix = transform;
-
-				float matIDAsFloat;
-				uint32_t matID = mesh.materialIndex;
-				memcpy(&matIDAsFloat, &matID, sizeof(float));
-
-				instances[index].aabbMin_MatID = glm::vec4(mesh.aabbMin, matIDAsFloat);
-				instances[index].aabbMax_Pad = glm::vec4(mesh.aabbMax, 0.0f);
-				instances[index].indexCount = mesh.indexCount;
-				instances[index].firstIndex = mesh.firstIndex;
-				instances[index].vertexOffset = mesh.vertexOffset;
-			}
-		}
+		instances[i].aabbMin_MatID = glm::vec4(mesh.aabbMin, matIDAsFloat);
+		instances[i].aabbMax_Pad = glm::vec4(mesh.aabbMax, 0.0f);
+		instances[i].indexCount = mesh.indexCount;
+		instances[i].firstIndex = mesh.firstIndex;
+		instances[i].vertexOffset = mesh.vertexOffset;
 	}
 
 	_instanceBuffer = upload_ssbo_data(instances.size() * sizeof(InstanceData), instances.data());
@@ -1285,8 +1155,10 @@ void AeroEngine::upload_scene_data(const SceneData& scene) {
 	VK_CHECK(vmaCreateBuffer(_allocator, &indirectInfo, &indirectAllocInfo,
 		&_drawIndirectBuffer.buffer, &_drawIndirectBuffer.allocation, nullptr));
 
+	// 更新全局 Descriptor Set 的 Binding 0 (材质) 和 Binding 2 (Instance)
 	update_global_descriptor_set();
 
+	//遍历图片并上传到 GPU 的 Bindless 数组
 	int loadedTextureCount = 0;
 	for (size_t i = 0; i < scene.images.size(); i++) {
 		const LoadedImage& img = scene.images[i];
@@ -1317,3 +1189,94 @@ void AeroEngine::upload_scene_data(const SceneData& scene) {
 
 	std::cout << "[AeroEngine] Successfully uploaded scene to GPU! (Textures loaded: " << loadedTextureCount << ")" << std::endl;
 }
+
+////to test gpu culling, I duplicated 10 sponza scenes
+//void AeroEngine::upload_scene_data(const SceneData& scene) {
+//	std::cout << "[AeroEngine] Starting scene upload to GPU..." << std::endl;
+//
+//	uint32_t whitePixel = 0xFFFFFFFF; // RGBA 全部为 255
+//	AllocatedImage defaultTexture = upload_texture(&whitePixel, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
+//	_sceneTextures.push_back(defaultTexture); // 交给现有的资源数组统一管理销毁
+//
+//	for (uint32_t i = 0; i < 4096; ++i) {
+//		update_bindless_texture(defaultTexture, i);
+//	}
+//
+//	_mainMeshBuffers = upload_mesh_data(scene);
+//	_renderables = scene.subMeshes;
+//
+//	_materialBuffer = upload_ssbo_data(scene.materials.size() * sizeof(MaterialParams), scene.materials.data());
+//
+//	// 更新全局 Descriptor Set 的 Binding 0 (材质 SSBO)
+//	_instanceCount = static_cast<uint32_t>(scene.subMeshes.size())*100;
+//	std::vector<InstanceData> instances(_instanceCount);
+//
+//	int gridDim = 10;
+//	float spacing = 5000.0f; // 每个 Sponza 之间的间距
+//
+//	for (int x = 0; x < gridDim; x++) {
+//		for (int z = 0; z < gridDim; z++) {
+//			for (size_t i = 0; i < scene.subMeshes.size(); i++) {
+//				int index = (x * gridDim + z) * scene.subMeshes.size() + i;
+//				const SubMesh& mesh = scene.subMeshes[i];
+//
+//				glm::mat4 transform = glm::translate(glm::mat4(1.0f), glm::vec3(x * spacing, 0.0f, z * spacing));
+//				instances[index].modelMatrix = transform;
+//
+//				float matIDAsFloat;
+//				uint32_t matID = mesh.materialIndex;
+//				memcpy(&matIDAsFloat, &matID, sizeof(float));
+//
+//				instances[index].aabbMin_MatID = glm::vec4(mesh.aabbMin, matIDAsFloat);
+//				instances[index].aabbMax_Pad = glm::vec4(mesh.aabbMax, 0.0f);
+//				instances[index].indexCount = mesh.indexCount;
+//				instances[index].firstIndex = mesh.firstIndex;
+//				instances[index].vertexOffset = mesh.vertexOffset;
+//			}
+//		}
+//	}
+//
+//	_instanceBuffer = upload_ssbo_data(instances.size() * sizeof(InstanceData), instances.data());
+//
+//	VkBufferCreateInfo indirectInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+//	indirectInfo.size = _instanceCount * sizeof(VkDrawIndexedIndirectCommand);
+//	indirectInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+//
+//	VmaAllocationCreateInfo indirectAllocInfo = {};
+//	indirectAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+//
+//	VK_CHECK(vmaCreateBuffer(_allocator, &indirectInfo, &indirectAllocInfo,
+//		&_drawIndirectBuffer.buffer, &_drawIndirectBuffer.allocation, nullptr));
+//
+//	update_global_descriptor_set();
+//
+//	int loadedTextureCount = 0;
+//	for (size_t i = 0; i < scene.images.size(); i++) {
+//		const LoadedImage& img = scene.images[i];
+//
+//		if (img.pixels != nullptr) {
+//			AllocatedImage gpuImage = upload_texture(img.pixels, img.width, img.height, VK_FORMAT_R8G8B8A8_UNORM);
+//
+//			update_bindless_texture(gpuImage, static_cast<uint32_t>(i));
+//
+//			_sceneTextures.push_back(gpuImage);
+//
+//			stbi_image_free(img.pixels);
+//			loadedTextureCount++;
+//		}
+//	}
+//
+//	_mainDeletionQueue.push_function([=]() {
+//		vmaDestroyBuffer(_allocator, _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
+//		vmaDestroyBuffer(_allocator, _mainMeshBuffers.vertexBuffer.buffer, _mainMeshBuffers.vertexBuffer.allocation);
+//		vmaDestroyBuffer(_allocator, _mainMeshBuffers.indexBuffer.buffer, _mainMeshBuffers.indexBuffer.allocation);
+//		vmaDestroyBuffer(_allocator, _materialBuffer.buffer, _materialBuffer.allocation);
+//		vmaDestroyBuffer(_allocator, _instanceBuffer.buffer, _instanceBuffer.allocation);
+//		for (const AllocatedImage& img : _sceneTextures) {
+//			vkDestroyImageView(_vkContext.device, img.view, nullptr);
+//			vmaDestroyImage(_allocator, img.image, img.allocation);
+//		}
+//		});
+//
+//	std::cout << "[AeroEngine] Successfully uploaded scene to GPU! (Textures loaded: " << loadedTextureCount << ")" << std::endl;
+//}

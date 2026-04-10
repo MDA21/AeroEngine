@@ -8,7 +8,7 @@ void VulkanContext::init(GLFWwindow* window, DeletionQueue& deletionQueue) {
 
     vkb::InstanceBuilder builder;
     auto inst_ret = builder.set_app_name("AeroEngine")
-        .request_validation_layers(false)
+        .request_validation_layers(true)
         .require_api_version(1, 3, 0)
         .use_default_debug_messenger()
         .build();

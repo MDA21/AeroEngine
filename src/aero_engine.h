@@ -5,6 +5,7 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
+#include "Core/Window.h"
 
 struct GLFWwindow;
 
@@ -64,8 +65,7 @@ private:
 	bool _stopRendering{ false };
 	bool _useGPUDriven{ true };
 
-	VkExtent2D _windowExtent{ 1280, 720 };
-	GLFWwindow* _window{ nullptr };
+	std::unique_ptr<Aero::Window> _window;
 
 	DeletionQueue _mainDeletionQueue;
 
@@ -121,12 +121,6 @@ private:
 
 	//camera
 	Camera _camera{ glm::vec3(0.0f, 1.0f, 5.0f) };
-	float _deltaTime{ 0.0f };
-	float _lastFrameTime{ 0.0f };
-
-	double _lastMouseX{ 0.0 };
-	double _lastMouseY{ 0.0 };
-	bool _firstMouse{ true };
 
 	//data for gpu driven
 	//instance SSBO
