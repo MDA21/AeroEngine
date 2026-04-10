@@ -10,6 +10,7 @@
 #include <glm/ext/matrix_transform.hpp>
 #include <cmath>
 #include <algorithm>
+#include <memory>
 #include <array>
 
 
@@ -54,8 +55,6 @@ AeroEngine& AeroEngine::Get() {
 void AeroEngine::init() {
 
 	_window = std::make_unique<Aero::Window>(Aero::Window::Specs{ 1280, 720, "AeroEngine v0.1" });
-
-	_vkContext.init(_window->handle(), _mainDeletionQueue);
 
 	init_vulkan();
 
@@ -103,6 +102,9 @@ void AeroEngine::cleanup() {
 	if (_isInitialized) {
 		vkDeviceWaitIdle(_vkContext.device);
 		_mainDeletionQueue.flush();
+
+		//_window.reset();
+
 		_isInitialized = false;
 	}
 }
