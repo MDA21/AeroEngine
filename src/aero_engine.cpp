@@ -56,15 +56,23 @@ void AeroEngine::init() {
 
 	_window = std::make_unique<Aero::Window>(Aero::Window::Specs{ 1280, 720, "AeroEngine v0.1" });
 
-	init_vulkan();
+	// 实例化并初始化 RHI 模块
+	_renderDevice = std::make_unique<Aero::RHI::VulkanDevice>();
+	_renderDevice->init(_window.get(), _mainDeletionQueue);
 
-	init_swapchain();
+	// 手动初始化 Render Semaphores (因为每个 swapchain image 需要一个)
+	_renderSemaphores.resize(_renderDevice->get_swapchain_images().size());
+	VkSemaphoreCreateInfo semaphoreInfo{ .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+	for (size_t i = 0; i < _renderSemaphores.size(); i++) {
+		VK_CHECK(vkCreateSemaphore(_renderDevice->get_device(), &semaphoreInfo, nullptr, &_renderSemaphores[i]));
+	}
+	_mainDeletionQueue.push_function([=]() {
+		for (VkSemaphore sem : _renderSemaphores) {
+			vkDestroySemaphore(_renderDevice->get_device(), sem, nullptr);
+		}
+		});
 
-	init_allocator();
-
-	init_commands();
-
-	init_sync_structures();
+	init_default_sampler();
 
 	init_bindless_descriptor();
 
@@ -100,13 +108,48 @@ void AeroEngine::run() {
 
 void AeroEngine::cleanup() {
 	if (_isInitialized) {
-		vkDeviceWaitIdle(_vkContext.device);
+		vkDeviceWaitIdle(_renderDevice->get_device());
 		_mainDeletionQueue.flush();
 
 		//_window.reset();
 
 		_isInitialized = false;
 	}
+}
+
+void AeroEngine::init_default_sampler() {
+	VkSamplerCreateInfo samplerInfo = {};
+	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	// 放大和缩小过滤器
+	samplerInfo.magFilter = VK_FILTER_LINEAR;
+	samplerInfo.minFilter = VK_FILTER_LINEAR;
+	// 寻址模式（重复）
+	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	// 禁用各向异性过滤（后续如果你要在 Device 开启特性，可以再回来把这里设为 TRUE）
+	samplerInfo.anisotropyEnable = VK_FALSE;
+	samplerInfo.maxAnisotropy = 1.0f;
+	// 边框颜色
+	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+	samplerInfo.unnormalizedCoordinates = VK_FALSE;
+	// 比较函数（用于 PCF 阴影，这里基础贴图不需要）
+	samplerInfo.compareEnable = VK_FALSE;
+	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+	// Mipmap 设置
+	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	samplerInfo.mipLodBias = 0.0f;
+	samplerInfo.minLod = 0.0f;
+	samplerInfo.maxLod = VK_LOD_CLAMP_NONE; // 允许所有 Mip 层级
+
+	VK_CHECK(vkCreateSampler(_renderDevice->get_device(), &samplerInfo, nullptr, &_defaultSamplerLinear));
+
+	// 压入全局清理队列
+	_mainDeletionQueue.push_function([=]() {
+		vkDestroySampler(_renderDevice->get_device(), _defaultSamplerLinear, nullptr);
+		});
+
+	std::cout << "[AeroEngine] Default Linear Sampler created." << std::endl;
 }
 
 void AeroEngine::process_input() {
@@ -122,169 +165,27 @@ void AeroEngine::process_input() {
 	if (_window->is_key_down(Aero::Key::LeftControl)) _camera.ProcessKeyboard(CameraMovement::DOWN, dt, isSprint);
 
 
-	// 处理鼠标视角
 	if (_window->is_mouse_button_down(Aero::Mouse::Right)) {
-		_window->set_cursor_mode(true); // 锁定
+		_window->set_cursor_mode(true);
 		glm::vec2 delta = _window->get_mouse_delta();
 		_camera.ProcessMouseMovement(delta.x, delta.y);
 	}
 	else {
-		_window->set_cursor_mode(false); // 释放
+		_window->set_cursor_mode(false);
 	}
 }
 
-void AeroEngine::init_vulkan() {
-	_vkContext.init(_window->handle(), _mainDeletionQueue);
-
-	VkSamplerCreateInfo sampInfo{};
-	sampInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	sampInfo.magFilter = VK_FILTER_LINEAR;
-	sampInfo.minFilter = VK_FILTER_LINEAR;
-	sampInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-	sampInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	sampInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	sampInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	sampInfo.maxAnisotropy = 1.0f;
-
-	sampInfo.minLod = 0.0f;
-	sampInfo.maxLod = VK_LOD_CLAMP_NONE;
-	sampInfo.mipLodBias = 0.0f;
-	VK_CHECK(vkCreateSampler(_vkContext.device, &sampInfo, nullptr, &_defaultSamplerLinear));
-
-	_mainDeletionQueue.push_function([=]() {
-		vkDestroySampler(_vkContext.device, _defaultSamplerLinear, nullptr);
-		});
-}
-
-void AeroEngine::init_swapchain() {
-	vkb::SwapchainBuilder swapchainBuilder{ _vkContext.chosenGPU, _vkContext.device, _vkContext.surface };
-
-	vkb::Swapchain vkbSwapchain = swapchainBuilder
-		.use_default_format_selection()
-		.set_desired_present_mode(VK_PRESENT_MODE_MAILBOX_KHR)
-		.set_desired_extent(_window->width(), _window->height())
-		.build()
-		.value();
-
-	_swapchain = vkbSwapchain.swapchain;
-	_swapchainImageFormat = vkbSwapchain.image_format;
-	_swapchainImages = vkbSwapchain.get_images().value();
-	_swapchainImageViews = vkbSwapchain.get_image_views().value();
-
-	_renderSemaphores.resize(_swapchainImages.size());
-	VkSemaphoreCreateInfo semaphoreInfo{};
-	semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-	for (size_t i = 0; i < _swapchainImages.size(); i++) {
-		VK_CHECK(vkCreateSemaphore(_vkContext.device, &semaphoreInfo, nullptr, &_renderSemaphores[i]));
-	}
-
-	_mainDeletionQueue.push_function([=]() {
-		for (VkSemaphore sem : _renderSemaphores) {
-			vkDestroySemaphore(_vkContext.device, sem, nullptr);
-		}
-		for (VkImageView view : _swapchainImageViews) {
-			vkDestroyImageView(_vkContext.device, view, nullptr);
-		}
-		vkDestroySwapchainKHR(_vkContext.device, _swapchain, nullptr);
-		std::cout << "[AeroEngine] Swapchain destroyed." << std::endl;
-		});
-}
-
-void AeroEngine::init_allocator() {
-	//because we used volk
-	VmaVulkanFunctions vulkanFunctions = {};
-	vulkanFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
-	vulkanFunctions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
-	vulkanFunctions.vkGetPhysicalDeviceProperties = vkGetPhysicalDeviceProperties;
-	vulkanFunctions.vkGetPhysicalDeviceMemoryProperties = vkGetPhysicalDeviceMemoryProperties;
-	vulkanFunctions.vkAllocateMemory = vkAllocateMemory;
-	vulkanFunctions.vkFreeMemory = vkFreeMemory;
-	vulkanFunctions.vkMapMemory = vkMapMemory;
-	vulkanFunctions.vkUnmapMemory = vkUnmapMemory;
-	vulkanFunctions.vkFlushMappedMemoryRanges = vkFlushMappedMemoryRanges;
-	vulkanFunctions.vkInvalidateMappedMemoryRanges = vkInvalidateMappedMemoryRanges;
-	vulkanFunctions.vkBindBufferMemory = vkBindBufferMemory;
-	vulkanFunctions.vkBindImageMemory = vkBindImageMemory;
-	vulkanFunctions.vkGetBufferMemoryRequirements = vkGetBufferMemoryRequirements;
-	vulkanFunctions.vkGetImageMemoryRequirements = vkGetImageMemoryRequirements;
-	vulkanFunctions.vkCreateBuffer = vkCreateBuffer;
-	vulkanFunctions.vkDestroyBuffer = vkDestroyBuffer;
-	vulkanFunctions.vkCreateImage = vkCreateImage;
-	vulkanFunctions.vkDestroyImage = vkDestroyImage;
-	vulkanFunctions.vkCmdCopyBuffer = vkCmdCopyBuffer;
-
-	VmaAllocatorCreateInfo allocatorInfo = {};
-	allocatorInfo.physicalDevice = _vkContext.chosenGPU;
-	allocatorInfo.device = _vkContext.device;
-	allocatorInfo.instance = _vkContext.instance;
-
-	allocatorInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-	allocatorInfo.pVulkanFunctions = &vulkanFunctions;
-
-	VK_CHECK(vmaCreateAllocator(&allocatorInfo, &_allocator));
-
-	_mainDeletionQueue.push_function([=]() {
-		vmaDestroyAllocator(_allocator);
-		std::cout << "[AeroEngine] VMA Allocator destroyed." << std::endl;
-		});
-}
-
-void AeroEngine::init_commands() {
-	VkCommandPoolCreateInfo commandPoolInfo{};
-	commandPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-	commandPoolInfo.pNext = nullptr;
-	commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-	commandPoolInfo.queueFamilyIndex = _vkContext.graphicsQueueFamily;
-
-	for (int i = 0; i < FRAME_OVERLAP; i++) {
-		VK_CHECK(vkCreateCommandPool(_vkContext.device, &commandPoolInfo, nullptr, &_frames[i]._commandPool));
-
-		VkCommandBufferAllocateInfo cmdAllocInfo{};
-		cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		cmdAllocInfo.pNext = nullptr;
-		cmdAllocInfo.commandPool = _frames[i]._commandPool;
-		cmdAllocInfo.commandBufferCount = 1;
-		cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-
-		VK_CHECK(vkAllocateCommandBuffers(_vkContext.device, &cmdAllocInfo, &_frames[i]._mainCommandBuffer));
-
-		_mainDeletionQueue.push_function([=]() {
-			vkDestroyCommandPool(_vkContext.device, _frames[i]._commandPool, nullptr);
-			});
-	}
-}
-
-void AeroEngine::init_sync_structures() {
-	VkFenceCreateInfo fenceCreateInfo{};
-	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-	fenceCreateInfo.pNext = nullptr;
-	fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
-	VkSemaphoreCreateInfo semaphoreCreateInfo{};
-	semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-	semaphoreCreateInfo.pNext = nullptr;
-	semaphoreCreateInfo.flags = 0;
-
-	for (int i = 0; i < FRAME_OVERLAP; i++) {
-		VK_CHECK(vkCreateFence(_vkContext.device, &fenceCreateInfo, nullptr, &_frames[i]._renderFence));
-
-		VK_CHECK(vkCreateSemaphore(_vkContext.device, &semaphoreCreateInfo, nullptr, &_frames[i]._swapchainSemaphore));
-
-		_mainDeletionQueue.push_function([=]() {
-			vkDestroyFence(_vkContext.device, _frames[i]._renderFence, nullptr);
-			vkDestroySemaphore(_vkContext.device, _frames[i]._swapchainSemaphore, nullptr);
-			});
-	}
-}
 
 void AeroEngine::init_pipelines() {
+	VkDevice device = _renderDevice->get_device();
+	VkFormat swapchainFormat = _renderDevice->get_swapchain_format();
+
 	VkShaderModule triangleFragShader;
-	if (!vkutil::load_shader_module("shaders/mesh.frag.spv", _vkContext.device, &triangleFragShader)) {
+	if (!vkutil::load_shader_module("shaders/mesh.frag.spv", device, &triangleFragShader)) {
 		std::cout << "Error when building the triangle fragment shader module" << std::endl;
 	}
 	VkShaderModule triangleVertShader;
-	if (!vkutil::load_shader_module("shaders/mesh.vert.spv", _vkContext.device, &triangleVertShader)) {
+	if (!vkutil::load_shader_module("shaders/mesh.vert.spv", device, &triangleVertShader)) {
 		std::cout << "Error when building the triangle vertex shader module" << std::endl;
 	}
 
@@ -301,7 +202,7 @@ void AeroEngine::init_pipelines() {
 	pipelineLayoutInfo.pushConstantRangeCount = 1;
 	pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
 
-	VK_CHECK(vkCreatePipelineLayout(_vkContext.device, &pipelineLayoutInfo, nullptr, &_trianglePipelineLayout));
+	VK_CHECK(vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &_trianglePipelineLayout));
 
 	//配置 Pipeline Builder
 	PipelineBuilder builder;
@@ -352,22 +253,22 @@ void AeroEngine::init_pipelines() {
 	builder._colorBlendAttachment.blendEnable = VK_FALSE;
 
 	builder._renderInfo.colorAttachmentCount = 1;
-	builder._renderInfo.pColorAttachmentFormats = &_swapchainImageFormat;
+	builder._renderInfo.pColorAttachmentFormats = &swapchainFormat;
 	builder._renderInfo.depthAttachmentFormat = _depthImageFormat;
 
-	_trianglePipeline = builder.build_pipeline(_vkContext.device);
+	_trianglePipeline = builder.build_pipeline(device);
 
-	vkDestroyShaderModule(_vkContext.device, triangleFragShader, nullptr);
-	vkDestroyShaderModule(_vkContext.device, triangleVertShader, nullptr);
+	vkDestroyShaderModule(device, triangleFragShader, nullptr);
+	vkDestroyShaderModule(device, triangleVertShader, nullptr);
 
 	_mainDeletionQueue.push_function([=]() {
-		vkDestroyPipeline(_vkContext.device, _trianglePipeline, nullptr);
-		vkDestroyPipelineLayout(_vkContext.device, _trianglePipelineLayout, nullptr);
+		vkDestroyPipeline(device, _trianglePipeline, nullptr);
+		vkDestroyPipelineLayout(device, _trianglePipelineLayout, nullptr);
 		});
 
 	//compute culling pipeline
 	VkShaderModule computeShader;
-	if (!vkutil::load_shader_module("shaders/culling.comp.spv", _vkContext.device, &computeShader)) {
+	if (!vkutil::load_shader_module("shaders/culling.comp.spv", device, &computeShader)) {
 		std::cerr << "Error when building the culling compute shader module" << std::endl;
 	}
 	VkPushConstantRange computePushConstant{};
@@ -382,7 +283,7 @@ void AeroEngine::init_pipelines() {
 	computeLayoutInfo.pushConstantRangeCount = 1;
 	computeLayoutInfo.pPushConstantRanges = &computePushConstant;
 
-	VK_CHECK(vkCreatePipelineLayout(_vkContext.device, &computeLayoutInfo, nullptr, &_cullingPipelineLayout));
+	VK_CHECK(vkCreatePipelineLayout(device, &computeLayoutInfo, nullptr, &_cullingPipelineLayout));
 
 	VkComputePipelineCreateInfo computePipelineInfo{};
 	computePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -392,17 +293,19 @@ void AeroEngine::init_pipelines() {
 	computePipelineInfo.stage.module = computeShader;
 	computePipelineInfo.stage.pName = "main";
 
-	VK_CHECK(vkCreateComputePipelines(_vkContext.device, VK_NULL_HANDLE, 1, &computePipelineInfo, nullptr, &_cullingPipeline));
+	VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computePipelineInfo, nullptr, &_cullingPipeline));
 
-	vkDestroyShaderModule(_vkContext.device, computeShader, nullptr);
+	vkDestroyShaderModule(_renderDevice->get_device(), computeShader, nullptr);
 
 	_mainDeletionQueue.push_function([=]() {
-		vkDestroyPipeline(_vkContext.device, _cullingPipeline, nullptr);
-		vkDestroyPipelineLayout(_vkContext.device, _cullingPipelineLayout, nullptr);
+		vkDestroyPipeline(device, _cullingPipeline, nullptr);
+		vkDestroyPipelineLayout(device, _cullingPipelineLayout, nullptr);
 		});
 }
 
 void AeroEngine::init_imgui() {
+	VkFormat swapchainImageFormat = _renderDevice->get_swapchain_format();
+
 	VkDescriptorPoolSize pool_sizes[] = {
 		{ VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
 		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
@@ -424,17 +327,17 @@ void AeroEngine::init_imgui() {
 	pool_info.poolSizeCount = (uint32_t)std::size(pool_sizes);
 	pool_info.pPoolSizes = pool_sizes;
 
-	VK_CHECK(vkCreateDescriptorPool(_vkContext.device, &pool_info, nullptr, &_imguiPool));
+	VK_CHECK(vkCreateDescriptorPool(_renderDevice->get_device(), &pool_info, nullptr, &_imguiPool));
 
 	ImGui::CreateContext();
 	ImGui_ImplGlfw_InitForVulkan(_window->handle(), true);
 
 	ImGui_ImplVulkan_InitInfo init_info{};
-	init_info.Instance = _vkContext.instance;
-	init_info.PhysicalDevice = _vkContext.chosenGPU;
-	init_info.Device = _vkContext.device;
-	init_info.QueueFamily = _vkContext.graphicsQueueFamily;
-	init_info.Queue = _vkContext.graphicsQueue;
+	init_info.Instance = _renderDevice->get_instance();
+	init_info.PhysicalDevice = _renderDevice->get_gpu();
+	init_info.Device = _renderDevice->get_device();
+	init_info.QueueFamily = _renderDevice->get_graphics_queue_family();
+	init_info.Queue = _renderDevice->get_graphics_queue();
 	init_info.DescriptorPool = _imguiPool;
 	init_info.MinImageCount = 3;
 	init_info.ImageCount = 3;
@@ -444,7 +347,7 @@ void AeroEngine::init_imgui() {
 	init_info.PipelineInfoMain.PipelineRenderingCreateInfo = {};
 	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
 	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &_swapchainImageFormat;
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &swapchainImageFormat;
 
 	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.depthAttachmentFormat = _depthImageFormat;
 
@@ -454,13 +357,14 @@ void AeroEngine::init_imgui() {
 		ImGui_ImplVulkan_Shutdown();
 		ImGui_ImplGlfw_Shutdown();
 		ImGui::DestroyContext();
-		vkDestroyDescriptorPool(_vkContext.device, _imguiPool, nullptr);
+		vkDestroyDescriptorPool(_renderDevice->get_device(), _imguiPool, nullptr);
 		});
 }
 
 void AeroEngine::draw() {
-	VK_CHECK(vkWaitForFences(_vkContext.device, 1, &get_current_frame()._renderFence, true, 1000000000));
-	VK_CHECK(vkResetFences(_vkContext.device, 1, &get_current_frame()._renderFence));
+	
+	VK_CHECK(vkWaitForFences(_renderDevice->get_device(), 1, &_renderDevice->get_current_frame().renderFence, true, 1000000000));
+	VK_CHECK(vkResetFences(_renderDevice->get_device(), 1, &_renderDevice->get_current_frame().renderFence));
 
 	ImGui_ImplVulkan_NewFrame();
 	ImGui_ImplGlfw_NewFrame();
@@ -490,7 +394,7 @@ void AeroEngine::draw() {
 	ImGui::PlotLines("##FrameTime", frameTimes, 120, frameTimeOffset, "Frame Time (ms)", 0.0f, 15.0f, ImVec2(0, 80));
 	ImGui::Separator();
 
-	ImGui::Text("VSync: %s", (_swapchainImageFormat == VK_PRESENT_MODE_FIFO_KHR) ? "ON (FIFO)" : "OFF (MAILBOX)");
+	ImGui::Text("VSync: %s", (_renderDevice->get_swapchain_format() == VK_PRESENT_MODE_FIFO_KHR) ? "ON (FIFO)" : "OFF (MAILBOX)");
 	ImGui::Separator();
 
 	ImGui::Text("Pipeline Architecture");
@@ -513,7 +417,7 @@ void AeroEngine::draw() {
 	ImGui::Render();
 
 	uint32_t swapchainImageIndex;
-	VkResult acquireResult = vkAcquireNextImageKHR(_vkContext.device, _swapchain, 1000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex);
+	VkResult acquireResult = vkAcquireNextImageKHR(_renderDevice->get_device(), _renderDevice->get_swapchain(), 1000000000, _renderDevice->get_current_frame().swapchainSemaphore, nullptr, &swapchainImageIndex);
 	if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
 		return;
 	}
@@ -521,7 +425,7 @@ void AeroEngine::draw() {
 		VK_CHECK(acquireResult);
 	}
 
-	VkCommandBuffer cmd = get_current_frame()._mainCommandBuffer;
+	VkCommandBuffer cmd = _renderDevice->get_current_frame().mainCommandBuffer;
 	VK_CHECK(vkResetCommandBuffer(cmd, 0));
 
 	VkCommandBufferBeginInfo cmdBeginInfo{};
@@ -568,13 +472,13 @@ void AeroEngine::draw() {
 	}
 
 	// ================= 阶段 2：Graphics Rendering =================
-	vkinit::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	vkinit::transition_image(cmd, _renderDevice->get_swapchain_images()[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
 	VkClearValue clearValue;
 	clearValue.color = { {0.05f, 0.05f, 0.08f, 1.0f} };
 	VkExtent2D currentExtent = { _window->width(), _window->height() };
 
-	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(_swapchainImageViews[swapchainImageIndex], &clearValue);
+	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(_renderDevice->get_swapchain_image_views()[swapchainImageIndex], &clearValue);
 	VkRenderingAttachmentInfo depthAttachment = vkinit::depth_attachment_info(_depthImage.view);
 	VkRenderingInfo renderInfo = vkinit::rendering_info(currentExtent, &colorAttachment, &depthAttachment);
 
@@ -637,7 +541,7 @@ void AeroEngine::draw() {
 
 	vkCmdEndRendering(cmd);
 
-	vkinit::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+	vkinit::transition_image(cmd, _renderDevice->get_swapchain_images()[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
 	VK_CHECK(vkEndCommandBuffer(cmd));
 
@@ -647,7 +551,7 @@ void AeroEngine::draw() {
 
 	VkSemaphoreSubmitInfo waitInfo{};
 	waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-	waitInfo.semaphore = get_current_frame()._swapchainSemaphore;
+	waitInfo.semaphore = _renderDevice->get_current_frame().swapchainSemaphore;
 	waitInfo.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 
 	VkSemaphoreSubmitInfo signalInfo{};
@@ -664,17 +568,19 @@ void AeroEngine::draw() {
 	submit.commandBufferInfoCount = 1;
 	submit.pCommandBufferInfos = &cmdinfo;
 
-	VK_CHECK(vkQueueSubmit2(_vkContext.graphicsQueue, 1, &submit, get_current_frame()._renderFence));
+	VK_CHECK(vkQueueSubmit2(_renderDevice->get_graphics_queue(), 1, &submit, _renderDevice->get_current_frame().renderFence));
+
+	VkSwapchainKHR swapchain = _renderDevice->get_swapchain();
 
 	VkPresentInfoKHR presentInfo{};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-	presentInfo.pSwapchains = &_swapchain;
+	presentInfo.pSwapchains = &swapchain;
 	presentInfo.swapchainCount = 1;
 	presentInfo.pWaitSemaphores = &_renderSemaphores[swapchainImageIndex];
 	presentInfo.waitSemaphoreCount = 1;
 	presentInfo.pImageIndices = &swapchainImageIndex;
 
-	VkResult presentResult = vkQueuePresentKHR(_vkContext.graphicsQueue, &presentInfo);
+	VkResult presentResult = vkQueuePresentKHR(_renderDevice->get_graphics_queue(), &presentInfo);
 	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
 		return;
 	}
@@ -682,10 +588,12 @@ void AeroEngine::draw() {
 		VK_CHECK(presentResult);
 	}
 
-	_frameNumber++;
+	_renderDevice->advance_frame();
 }
 
 void AeroEngine::init_depth_image() {
+	VmaAllocator allocator = _renderDevice->get_allocator();
+
 	VkExtent3D depthImageExtent = {
 		_window->width(),
 		_window->height(),
@@ -710,7 +618,7 @@ void AeroEngine::init_depth_image() {
 	dimg_allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 	// 使用 VMA 分配内存并绑定
-	VK_CHECK(vmaCreateImage(_allocator, &dimg_info, &dimg_allocinfo, &_depthImage.image, &_depthImage.allocation, nullptr));
+	VK_CHECK(vmaCreateImage(allocator, &dimg_info, &dimg_allocinfo, &_depthImage.image, &_depthImage.allocation, nullptr));
 
 	// 2. 创建 Depth ImageView
 	VkImageViewCreateInfo view_info{};
@@ -725,9 +633,9 @@ void AeroEngine::init_depth_image() {
 	view_info.subresourceRange.baseArrayLayer = 0;
 	view_info.subresourceRange.layerCount = 1;
 
-	VK_CHECK(vkCreateImageView(_vkContext.device, &view_info, nullptr, &_depthImage.view));
+	VK_CHECK(vkCreateImageView(_renderDevice->get_device(), &view_info, nullptr, &_depthImage.view));
 
-	immediate_submit([&](VkCommandBuffer cmd) {
+	_renderDevice->immediate_submit([&](VkCommandBuffer cmd) {
 		VkImageMemoryBarrier barrier{};
 		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -746,38 +654,16 @@ void AeroEngine::init_depth_image() {
 
 	// 压入全局销毁队列
 	_mainDeletionQueue.push_function([=]() {
-		vkDestroyImageView(_vkContext.device, _depthImage.view, nullptr);
-		vmaDestroyImage(_allocator, _depthImage.image, _depthImage.allocation);
+		vkDestroyImageView(_renderDevice->get_device(), _depthImage.view, nullptr);
+		vmaDestroyImage(allocator, _depthImage.image, _depthImage.allocation);
 		});
 
 	std::cout << "[AeroEngine] Depth Image allocated successfully." << std::endl;
 }
 
-void AeroEngine::immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function) {
-	VkCommandBuffer cmd = _vkContext.m_uploadContext.commandBuffer;
-
-	VkCommandBufferBeginInfo cmdBeginInfo = {};
-	cmdBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	cmdBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-	vkBeginCommandBuffer(cmd, &cmdBeginInfo);
-	function(cmd);
-	vkEndCommandBuffer(cmd);
-
-	VkSubmitInfo submit = {};
-	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submit.commandBufferCount = 1;
-	submit.pCommandBuffers = &cmd;
-
-	vkQueueSubmit(_vkContext.graphicsQueue, 1, &submit, _vkContext.m_uploadContext.uploadFence);
-
-	vkWaitForFences(_vkContext.device, 1, &_vkContext.m_uploadContext.uploadFence, VK_TRUE, UINT64_MAX);
-	vkResetFences(_vkContext.device, 1, &_vkContext.m_uploadContext.uploadFence);
-
-	vkResetCommandPool(_vkContext.device, _vkContext.m_uploadContext.commandPool, 0);
-}
-
 GPUMeshBuffers AeroEngine::upload_mesh_data(const SceneData& scene) {
+	VmaAllocator allocator = _renderDevice->get_allocator();
+
 	GPUMeshBuffers outBuffers;
 
 	const size_t vertexBufferSize = scene.vertices.size() * sizeof(Vertex);
@@ -794,7 +680,7 @@ GPUMeshBuffers AeroEngine::upload_mesh_data(const SceneData& scene) {
 
 	AllocatedBuffer stagingBuffer;
 	VmaAllocationInfo stagingAllocResult;
-	VK_CHECK(vmaCreateBuffer(_allocator, &stagingBufferInfo, &stagingAllocInfo,
+	VK_CHECK(vmaCreateBuffer(allocator, &stagingBufferInfo, &stagingAllocInfo,
 		&stagingBuffer.buffer, &stagingBuffer.allocation, &stagingAllocResult));
 
 	void* mappedData = stagingAllocResult.pMappedData;
@@ -812,13 +698,13 @@ GPUMeshBuffers AeroEngine::upload_mesh_data(const SceneData& scene) {
 	VmaAllocationCreateInfo vmaAllocInfo = {};
 	vmaAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-	VK_CHECK(vmaCreateBuffer(_allocator, &vboInfo, &vmaAllocInfo,
+	VK_CHECK(vmaCreateBuffer(allocator, &vboInfo, &vmaAllocInfo,
 		&outBuffers.vertexBuffer.buffer, &outBuffers.vertexBuffer.allocation, nullptr));
 
-	VK_CHECK(vmaCreateBuffer(_allocator, &iboInfo, &vmaAllocInfo,
+	VK_CHECK(vmaCreateBuffer(allocator, &iboInfo, &vmaAllocInfo,
 		&outBuffers.indexBuffer.buffer, &outBuffers.indexBuffer.allocation, nullptr));
 
-	immediate_submit([&](VkCommandBuffer cmd) {
+	_renderDevice->immediate_submit([&](VkCommandBuffer cmd) {
 		VkBufferCopy vertexCopy = { 0, 0, vertexBufferSize };
 		vkCmdCopyBuffer(cmd, stagingBuffer.buffer, outBuffers.vertexBuffer.buffer, 1, &vertexCopy);
 
@@ -826,7 +712,7 @@ GPUMeshBuffers AeroEngine::upload_mesh_data(const SceneData& scene) {
 		vkCmdCopyBuffer(cmd, stagingBuffer.buffer, outBuffers.indexBuffer.buffer, 1, &indexCopy);
 		});
 
-	vmaDestroyBuffer(_allocator, stagingBuffer.buffer, stagingBuffer.allocation);
+	vmaDestroyBuffer(allocator, stagingBuffer.buffer, stagingBuffer.allocation);
 
 	return outBuffers;
 }
@@ -876,7 +762,7 @@ void AeroEngine::init_bindless_descriptor() {
 	layoutInfo.bindingCount = 4;
 	layoutInfo.pBindings = bindings;
 
-	VK_CHECK(vkCreateDescriptorSetLayout(_vkContext.device, &layoutInfo, nullptr, &_globalSetLayout));
+	VK_CHECK(vkCreateDescriptorSetLayout(_renderDevice->get_device(), &layoutInfo, nullptr, &_globalSetLayout));
 
 	VkDescriptorPoolSize poolSizes[] = {
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 },
@@ -890,7 +776,7 @@ void AeroEngine::init_bindless_descriptor() {
 	poolInfo.poolSizeCount = 2;
 	poolInfo.pPoolSizes = poolSizes;
 
-	VK_CHECK(vkCreateDescriptorPool(_vkContext.device, &poolInfo, nullptr, &_globalDescriptorPool));
+	VK_CHECK(vkCreateDescriptorPool(_renderDevice->get_device(), &poolInfo, nullptr, &_globalDescriptorPool));
 
 	VkDescriptorSetAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -898,17 +784,19 @@ void AeroEngine::init_bindless_descriptor() {
 	allocInfo.descriptorSetCount = 1;
 	allocInfo.pSetLayouts = &_globalSetLayout;
 
-	VK_CHECK(vkAllocateDescriptorSets(_vkContext.device, &allocInfo, &_globalDescriptorSet));
+	VK_CHECK(vkAllocateDescriptorSets(_renderDevice->get_device(), &allocInfo, &_globalDescriptorSet));
 
 	_mainDeletionQueue.push_function([=]() {
-		vkDestroyDescriptorPool(_vkContext.device, _globalDescriptorPool, nullptr);
-		vkDestroyDescriptorSetLayout(_vkContext.device, _globalSetLayout, nullptr);
+		vkDestroyDescriptorPool(_renderDevice->get_device(), _globalDescriptorPool, nullptr);
+		vkDestroyDescriptorSetLayout(_renderDevice->get_device(), _globalSetLayout, nullptr);
 		});
 
 	std::cout << "[AeroEngine] Bindless Descriptor Setup Complete." << std::endl;
 }
 
 AllocatedBuffer AeroEngine::upload_ssbo_data(size_t bufferSize, const void* data) {
+	VmaAllocator allocator = _renderDevice->get_allocator();
+
 	// 注意这里第一行不用再算 bufferSize 了，直接用传进来的
 	VkBufferCreateInfo ssboInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ssboInfo.size = bufferSize;
@@ -918,7 +806,7 @@ AllocatedBuffer AeroEngine::upload_ssbo_data(size_t bufferSize, const void* data
 	vmaAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
 	AllocatedBuffer ssboBuffer;
-	VK_CHECK(vmaCreateBuffer(_allocator, &ssboInfo, &vmaAllocInfo,
+	VK_CHECK(vmaCreateBuffer(allocator, &ssboInfo, &vmaAllocInfo,
 		&ssboBuffer.buffer, &ssboBuffer.allocation, nullptr));
 
 	VkBufferCreateInfo stagingInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -931,23 +819,24 @@ AllocatedBuffer AeroEngine::upload_ssbo_data(size_t bufferSize, const void* data
 
 	AllocatedBuffer stagingBuffer;
 	VmaAllocationInfo stagingAllocResult;
-	VK_CHECK(vmaCreateBuffer(_allocator, &stagingInfo, &stagingAllocInfo,
+	VK_CHECK(vmaCreateBuffer(allocator, &stagingInfo, &stagingAllocInfo,
 		&stagingBuffer.buffer, &stagingBuffer.allocation, &stagingAllocResult));
 
 	// 使用传入的 data 指针进行拷贝
 	memcpy(stagingAllocResult.pMappedData, data, bufferSize);
 
-	immediate_submit([&](VkCommandBuffer cmd) {
+	_renderDevice->immediate_submit([&](VkCommandBuffer cmd) {
 		VkBufferCopy copyRegion = { 0, 0, bufferSize };
 		vkCmdCopyBuffer(cmd, stagingBuffer.buffer, ssboBuffer.buffer, 1, &copyRegion);
 		});
 
-	vmaDestroyBuffer(_allocator, stagingBuffer.buffer, stagingBuffer.allocation);
+	vmaDestroyBuffer(allocator, stagingBuffer.buffer, stagingBuffer.allocation);
 
 	return ssboBuffer;
 }
 
 void AeroEngine::update_global_descriptor_set() {
+
 	VkDescriptorBufferInfo matBufferInfo{};
 	matBufferInfo.buffer = _materialBuffer.buffer;
 	matBufferInfo.offset = 0;
@@ -991,10 +880,12 @@ void AeroEngine::update_global_descriptor_set() {
 
 	// 修改：提交 3 个写入操作
 	VkWriteDescriptorSet writes[] = { matWrite, instWrite, indirectWrite };
-	vkUpdateDescriptorSets(_vkContext.device, 3, writes, 0, nullptr);
+	vkUpdateDescriptorSets(_renderDevice->get_device(), 3, writes, 0, nullptr);
 }
 
 AllocatedImage AeroEngine::upload_texture(void* pixels, int width, int height, VkFormat format) {
+	VmaAllocator allocator = _renderDevice->get_allocator();
+
 	uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
 	VkExtent3D imageExtent = { (uint32_t)width, (uint32_t)height, 1 };
 	VkDeviceSize imageSize = width * height * 4;
@@ -1016,7 +907,7 @@ AllocatedImage AeroEngine::upload_texture(void* pixels, int width, int height, V
 	AllocatedImage newImage;
 	newImage.imageFormat = format;
 	newImage.imageExtent = imageExtent;
-	VK_CHECK(vmaCreateImage(_allocator, &dimg_info, &dimg_allocinfo,
+	VK_CHECK(vmaCreateImage(allocator, &dimg_info, &dimg_allocinfo,
 		&newImage.image, &newImage.allocation, nullptr));
 
 	VkBufferCreateInfo stagingInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -1029,12 +920,12 @@ AllocatedImage AeroEngine::upload_texture(void* pixels, int width, int height, V
 
 	AllocatedBuffer stagingBuffer;
 	VmaAllocationInfo stagingAllocResult;
-	VK_CHECK(vmaCreateBuffer(_allocator, &stagingInfo, &stagingAllocInfo, &stagingBuffer.buffer, &stagingBuffer.allocation, &stagingAllocResult));
+	VK_CHECK(vmaCreateBuffer(allocator, &stagingInfo, &stagingAllocInfo, &stagingBuffer.buffer, &stagingBuffer.allocation, &stagingAllocResult));
 
 	memcpy(stagingAllocResult.pMappedData, pixels, static_cast<size_t>(imageSize));
 
 	// 3. 异步提交：Transition Layout (Undefined -> TransferDst) -> Copy Buffer To Image -> Transition Layout (TransferDst -> ShaderReadOnly)
-	immediate_submit([&](VkCommandBuffer cmd) {
+	_renderDevice->immediate_submit([&](VkCommandBuffer cmd) {
 		vkinit::transition_image_mip(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, mipLevels);
 
 		VkBufferImageCopy copyRegion = {};
@@ -1073,7 +964,7 @@ AllocatedImage AeroEngine::upload_texture(void* pixels, int width, int height, V
 		vkinit::transition_image_mip(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels - 1, 1);
 		});
 
-	vmaDestroyBuffer(_allocator, stagingBuffer.buffer, stagingBuffer.allocation);
+	vmaDestroyBuffer(allocator, stagingBuffer.buffer, stagingBuffer.allocation);
 
 	VkImageViewCreateInfo view_info{};
 	view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1086,7 +977,7 @@ AllocatedImage AeroEngine::upload_texture(void* pixels, int width, int height, V
 	view_info.subresourceRange.baseArrayLayer = 0;
 	view_info.subresourceRange.layerCount = 1;
 
-	VK_CHECK(vkCreateImageView(_vkContext.device, &view_info, nullptr, &newImage.view));
+	VK_CHECK(vkCreateImageView(_renderDevice->get_device(), &view_info, nullptr, &newImage.view));
 
 	return newImage;
 }
@@ -1106,11 +997,13 @@ void AeroEngine::update_bindless_texture(const AllocatedImage& image, uint32_t t
 	textureWrite.descriptorCount = 1;
 	textureWrite.pImageInfo = &imageBufferInfo;
 
-	vkUpdateDescriptorSets(_vkContext.device, 1, &textureWrite, 0, nullptr);
+	vkUpdateDescriptorSets(_renderDevice->get_device(), 1, &textureWrite, 0, nullptr);
 }
 
 void AeroEngine::upload_scene_data(const SceneData& scene) {
 	std::cout << "[AeroEngine] Starting scene upload to GPU..." << std::endl;
+
+	VmaAllocator allocator = _renderDevice->get_allocator();
 
 	uint32_t whitePixel = 0xFFFFFFFF; // RGBA 全部为 255
 	AllocatedImage defaultTexture = upload_texture(&whitePixel, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
@@ -1154,7 +1047,7 @@ void AeroEngine::upload_scene_data(const SceneData& scene) {
 	VmaAllocationCreateInfo indirectAllocInfo = {};
 	indirectAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-	VK_CHECK(vmaCreateBuffer(_allocator, &indirectInfo, &indirectAllocInfo,
+	VK_CHECK(vmaCreateBuffer(allocator, &indirectInfo, &indirectAllocInfo,
 		&_drawIndirectBuffer.buffer, &_drawIndirectBuffer.allocation, nullptr));
 
 	// 更新全局 Descriptor Set 的 Binding 0 (材质) 和 Binding 2 (Instance)
@@ -1178,14 +1071,14 @@ void AeroEngine::upload_scene_data(const SceneData& scene) {
 	}
 
 	_mainDeletionQueue.push_function([=]() {
-		vmaDestroyBuffer(_allocator, _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
-		vmaDestroyBuffer(_allocator, _mainMeshBuffers.vertexBuffer.buffer, _mainMeshBuffers.vertexBuffer.allocation);
-		vmaDestroyBuffer(_allocator, _mainMeshBuffers.indexBuffer.buffer, _mainMeshBuffers.indexBuffer.allocation);
-		vmaDestroyBuffer(_allocator, _materialBuffer.buffer, _materialBuffer.allocation);
-		vmaDestroyBuffer(_allocator, _instanceBuffer.buffer, _instanceBuffer.allocation);
+		vmaDestroyBuffer(allocator, _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
+		vmaDestroyBuffer(allocator, _mainMeshBuffers.vertexBuffer.buffer, _mainMeshBuffers.vertexBuffer.allocation);
+		vmaDestroyBuffer(allocator, _mainMeshBuffers.indexBuffer.buffer, _mainMeshBuffers.indexBuffer.allocation);
+		vmaDestroyBuffer(allocator, _materialBuffer.buffer, _materialBuffer.allocation);
+		vmaDestroyBuffer(allocator, _instanceBuffer.buffer, _instanceBuffer.allocation);
 		for (const AllocatedImage& img : _sceneTextures) {
-			vkDestroyImageView(_vkContext.device, img.view, nullptr);
-			vmaDestroyImage(_allocator, img.image, img.allocation);
+			vkDestroyImageView(_renderDevice->get_device(), img.view, nullptr);
+			vmaDestroyImage(allocator, img.image, img.allocation);
 		}
 		});
 
