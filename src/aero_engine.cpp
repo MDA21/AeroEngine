@@ -4,6 +4,7 @@
 #include "vk_initializers.h"
 #include "gltf_loader.h"
 #include "Core/KeyCodes.h"
+#include "Resource/asset_manager.h"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -20,6 +21,12 @@ void AeroEngine::init() {
 
 	_renderDevice = std::make_unique<Aero::RHI::VulkanDevice>();
 	_renderDevice->init(_window.get(), _mainDeletionQueue);
+
+	Aero::Resource::AssetManager::Get().init(_renderDevice.get());
+
+	_mainDeletionQueue.push_function([=]() {
+		Aero::Resource::AssetManager::Get().cleanup();
+		});
 
 	_renderSemaphores.resize(_renderDevice->get_swapchain_images().size());
 	VkSemaphoreCreateInfo semaphoreInfo{ .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };

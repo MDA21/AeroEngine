@@ -13,8 +13,23 @@ namespace Aero {
 			init_vulkan(window);
 			init_swapchain(window);
 			init_allocator();
+			init_staging_ring_buffer(64 * 1024 * 1024); // 64 MB
 			init_commands();
 			init_sync_structures();
+
+			VkCommandBufferAllocateInfo asyncAlloc{ .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+			asyncAlloc.commandPool = _asyncUploadContext.commandPool;
+			asyncAlloc.commandBufferCount = 1;
+			asyncAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+			VK_CHECK(vkAllocateCommandBuffers(_device, &asyncAlloc, &_asyncUploadContext.commandBuffer));
+
+			VkCommandBufferBeginInfo beginInfo{ .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+			beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+			VK_CHECK(vkBeginCommandBuffer(_asyncUploadContext.commandBuffer, &beginInfo));
+
+			_deletionQueue->push_function([=]() {
+				vkDestroyCommandPool(_device, _asyncUploadContext.commandPool, nullptr);
+				});
 
 			std::cout << "[RHI] Vulkan Device successfully initialized." << std::endl;
 		}
@@ -161,19 +176,20 @@ namespace Aero {
 					});
 			}
 
-			VK_CHECK(vkCreateCommandPool(_device, &commandPoolInfo, nullptr, &_uploadContext.commandPool));
-			VkCommandBufferAllocateInfo uploadAlloc{ .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-			uploadAlloc.commandPool = _uploadContext.commandPool;
-			uploadAlloc.commandBufferCount = 1;
-			uploadAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-			VK_CHECK(vkAllocateCommandBuffers(_device, &uploadAlloc, &_uploadContext.commandBuffer));
+			VkCommandPoolCreateInfo asyncPoolInfo{ .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+			asyncPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+			//这里用 Transfer Queue 所在的 Family
+			asyncPoolInfo.queueFamilyIndex = _transferQueueFamily;
+			VK_CHECK(vkCreateCommandPool(_device, &asyncPoolInfo, nullptr, &_asyncUploadContext.commandPool));
 
-			VkFenceCreateInfo fenceInfo{ .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-			VK_CHECK(vkCreateFence(_device, &fenceInfo, nullptr, &_uploadContext.uploadFence));
+			VkCommandBufferAllocateInfo asyncAlloc{ .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+			asyncAlloc.commandPool = _asyncUploadContext.commandPool;
+			asyncAlloc.commandBufferCount = 1;
+			asyncAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+			VK_CHECK(vkAllocateCommandBuffers(_device, &asyncAlloc, &_asyncUploadContext.commandBuffer));
 
 			_deletionQueue->push_function([=]() {
-				vkDestroyFence(_device, _uploadContext.uploadFence, nullptr);
-				vkDestroyCommandPool(_device, _uploadContext.commandPool, nullptr);
+				vkDestroyCommandPool(_device, _asyncUploadContext.commandPool, nullptr);
 				});
 		}
 
@@ -192,10 +208,27 @@ namespace Aero {
 					vkDestroySemaphore(_device, _frames[i].swapchainSemaphore, nullptr);
 					});
 			}
+			VkSemaphoreTypeCreateInfo timelineCreateInfo{};
+			timelineCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+			timelineCreateInfo.pNext = nullptr;
+			timelineCreateInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+			timelineCreateInfo.initialValue = 0;
+
+			VkSemaphoreCreateInfo timelineSemaphoreInfo{};
+			timelineSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+			timelineSemaphoreInfo.pNext = &timelineCreateInfo;
+
+			VK_CHECK(vkCreateSemaphore(_device, &timelineSemaphoreInfo, nullptr, &_asyncUploadContext.timelineSemaphore));
+
+			_deletionQueue->push_function([=]() {
+				vkDestroySemaphore(_device, _asyncUploadContext.timelineSemaphore, nullptr);
+				});
 		}
 
 		void VulkanDevice::immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function) {
-			VkCommandBuffer cmd = _uploadContext.commandBuffer;
+			std::lock_guard<std::mutex> lock(_asyncUploadContext.uploadMutex);
+
+			VkCommandBuffer cmd = _asyncUploadContext.commandBuffer;
 
 			VkCommandBufferBeginInfo cmdBeginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 			cmdBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -204,15 +237,60 @@ namespace Aero {
 			function(cmd);
 			VK_CHECK(vkEndCommandBuffer(cmd));
 
+			_asyncUploadContext.uploadValue++;
+
+			uint64_t signalValue = _asyncUploadContext.uploadValue;
+			VkTimelineSemaphoreSubmitInfo timelineInfo{ .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
+			timelineInfo.signalSemaphoreValueCount = 1;
+			timelineInfo.pSignalSemaphoreValues = &signalValue;
+
 			VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
+			submit.pNext = &timelineInfo;
 			submit.commandBufferCount = 1;
 			submit.pCommandBuffers = &cmd;
+			submit.signalSemaphoreCount = 1;
+			submit.pSignalSemaphores = &_asyncUploadContext.timelineSemaphore;
 
-			VK_CHECK(vkQueueSubmit(_graphicsQueue, 1, &submit, _uploadContext.uploadFence));
+			VK_CHECK(vkQueueSubmit(_transferQueue, 1, &submit, VK_NULL_HANDLE));
 
-			VK_CHECK(vkWaitForFences(_device, 1, &_uploadContext.uploadFence, VK_TRUE, UINT64_MAX));
-			VK_CHECK(vkResetFences(_device, 1, &_uploadContext.uploadFence));
-			VK_CHECK(vkResetCommandPool(_device, _uploadContext.commandPool, 0));
+			// 阻塞等待 GPU 达到这个 timeline value (过渡期暂时阻塞)
+			VkSemaphoreWaitInfo waitInfo{ .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+			waitInfo.semaphoreCount = 1;
+			waitInfo.pSemaphores = &_asyncUploadContext.timelineSemaphore;
+			waitInfo.pValues = &signalValue;
+			VK_CHECK(vkWaitSemaphores(_device, &waitInfo, UINT64_MAX));
+
+			VK_CHECK(vkResetCommandPool(_device, _asyncUploadContext.commandPool, 0));
+		}
+
+		void VulkanDevice::init_staging_ring_buffer(size_t size) {
+			_stagingRingBuffer.totalSize = size;
+			_stagingRingBuffer.head = 0;
+			_stagingRingBuffer.tail = 0;
+
+			VkBufferCreateInfo bufferInfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+			bufferInfo.size = size;
+			bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT; // 作为拷贝源
+
+			VmaAllocationCreateInfo vmaallocInfo = {};
+			vmaallocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+			// 关键点 1: MAPPED_BIT 保证分配后 mappedData 直接可用，终生不调 vkMapMemory
+			// 关键点 2: SEQUENTIAL_WRITE_BIT 提示驱动使用 Write-Combined 内存，提升 memcpy 极速
+			vmaallocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+			VmaAllocationInfo allocInfo;
+			VK_CHECK(vmaCreateBuffer(_allocator, &bufferInfo, &vmaallocInfo,
+				&_stagingRingBuffer.buffer,
+				&_stagingRingBuffer.allocation,
+				&allocInfo));
+
+			_stagingRingBuffer.mappedData = allocInfo.pMappedData;
+
+			_deletionQueue->push_function([=]() {
+				vmaDestroyBuffer(_allocator, _stagingRingBuffer.buffer, _stagingRingBuffer.allocation);
+				});
+
+			std::cout << "[RHI] Allocated " << size / (1024 * 1024) << "MB Persistent Staging Buffer." << std::endl;
 		}
 	}
 }

@@ -15,7 +15,7 @@ namespace Aero {
             uint32_t instanceCount;
         };
 
-        std::array<glm::vec4, 6> get_frustum_planes(const glm::mat4& viewProj) {
+        static std::array<glm::vec4, 6> get_frustum_planes(const glm::mat4& viewProj) {
             std::array<glm::vec4, 6> planes;
 
             // glm 是列主序，为了套用标准行主序提取公式，我们先求转置

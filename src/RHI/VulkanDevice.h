@@ -2,6 +2,7 @@
 #include "vk_types.h"
 #include "Core/Window.h"
 #include <vector>
+#include <mutex>
 
 namespace Aero {
 	namespace RHI {
@@ -11,6 +12,25 @@ namespace Aero {
 			VkCommandBuffer mainCommandBuffer;
 			VkSemaphore swapchainSemaphore;
 			VkFence renderFence;
+		};
+
+		struct AsyncUploadContext {
+			VkCommandPool commandPool;
+			VkCommandBuffer commandBuffer;
+			VkSemaphore timelineSemaphore; // Vulkan 1.2+ 时间线信号量，代替 Fence
+			uint64_t uploadValue{ 0 };     // 游标：记录当前已提交的递增值
+			std::mutex uploadMutex;        // 护航：未来在多线程录制指令时防数据竞争
+		};
+
+		struct StagingRingBuffer
+		{
+			VkBuffer buffer{ VK_NULL_HANDLE };
+			VmaAllocation allocation{ VK_NULL_HANDLE };
+			void* mappedData{ nullptr };
+
+			size_t totalSize{ 0 };
+			size_t head{ 0 };
+			size_t tail{ 0 };
 		};
 
 		class VulkanDevice
@@ -25,6 +45,7 @@ namespace Aero {
 
 			VkQueue get_graphics_queue() const { return _graphicsQueue; }
 			uint32_t get_graphics_queue_family() const { return _graphicsQueueFamily; }
+			VkQueue get_transfer_queue() const { return _transferQueue; }
 
 			VkSwapchainKHR get_swapchain() const { return _swapchain; }
 			VkFormat get_swapchain_format() const { return _swapchainImageFormat; }
@@ -37,12 +58,23 @@ namespace Aero {
 
 			void immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function);
 
+			StagingRingBuffer& get_staging_ring_buffer() { return _stagingRingBuffer; }
+
+			uint64_t get_timeline_value() const {
+				uint64_t val;
+				vkGetSemaphoreCounterValue(_device, _asyncUploadContext.timelineSemaphore, &val);
+				return val;
+			}
+
+			AsyncUploadContext& get_async_upload_context() { return _asyncUploadContext; }
+
 		private:
 			void init_vulkan(Aero::Window* window);
 			void init_swapchain(Aero::Window* window);
 			void init_allocator();
 			void init_commands();
 			void init_sync_structures();
+			void init_staging_ring_buffer(size_t size);
 
 			DeletionQueue* _deletionQueue{ nullptr };
 
@@ -67,11 +99,9 @@ namespace Aero {
 			FrameData _frames[FRAME_OVERLAP];
 			uint32_t _frameNumber{ 0 };
 
-			struct UploadContext {
-				VkFence uploadFence;
-				VkCommandPool commandPool;
-				VkCommandBuffer commandBuffer;
-			} _uploadContext;
+			AsyncUploadContext  _asyncUploadContext;
+
+			StagingRingBuffer _stagingRingBuffer;
 		};
 
 }
