@@ -1,4 +1,4 @@
-#include "VulkanDevice.h"
+ï»¿#include "VulkanDevice.h"
 #include <VkBootstrap.h>
 #include <iostream>
 
@@ -16,20 +16,6 @@ namespace Aero {
 			init_staging_ring_buffer(64 * 1024 * 1024); // 64 MB
 			init_commands();
 			init_sync_structures();
-
-			VkCommandBufferAllocateInfo asyncAlloc{ .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-			asyncAlloc.commandPool = _asyncUploadContext.commandPool;
-			asyncAlloc.commandBufferCount = 1;
-			asyncAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-			VK_CHECK(vkAllocateCommandBuffers(_device, &asyncAlloc, &_asyncUploadContext.commandBuffer));
-
-			VkCommandBufferBeginInfo beginInfo{ .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-			beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-			VK_CHECK(vkBeginCommandBuffer(_asyncUploadContext.commandBuffer, &beginInfo));
-
-			_deletionQueue->push_function([=]() {
-				vkDestroyCommandPool(_device, _asyncUploadContext.commandPool, nullptr);
-				});
 
 			std::cout << "[RHI] Vulkan Device successfully initialized." << std::endl;
 		}
@@ -66,6 +52,7 @@ namespace Aero {
 			features12.runtimeDescriptorArray = VK_TRUE;
 			features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
 			features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+			features12.timelineSemaphore = VK_TRUE;
 
 			VkPhysicalDeviceFeatures baseFeatures{};
 			baseFeatures.multiDrawIndirect = VK_TRUE;
@@ -178,7 +165,7 @@ namespace Aero {
 
 			VkCommandPoolCreateInfo asyncPoolInfo{ .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 			asyncPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-			//ÕâÀïÓÃ Transfer Queue ËùÔÚµÄ Family
+			//è¿™é‡Œç”¨ Transfer Queue æ‰€åœ¨çš„ Family
 			asyncPoolInfo.queueFamilyIndex = _transferQueueFamily;
 			VK_CHECK(vkCreateCommandPool(_device, &asyncPoolInfo, nullptr, &_asyncUploadContext.commandPool));
 
@@ -187,6 +174,11 @@ namespace Aero {
 			asyncAlloc.commandBufferCount = 1;
 			asyncAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 			VK_CHECK(vkAllocateCommandBuffers(_device, &asyncAlloc, &_asyncUploadContext.commandBuffer));
+
+			//å”¯ä¸€éœ€è¦è¡¥å……çš„ï¼šç»™æ–°åˆ†é…çš„å¼¹åŒ£ä¸Šè†›ï¼Œè¿›å…¥å½•åˆ¶çŠ¶æ€
+			VkCommandBufferBeginInfo beginInfo{ .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+			beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+			VK_CHECK(vkBeginCommandBuffer(_asyncUploadContext.commandBuffer, &beginInfo));
 
 			_deletionQueue->push_function([=]() {
 				vkDestroyCommandPool(_device, _asyncUploadContext.commandPool, nullptr);
@@ -226,41 +218,52 @@ namespace Aero {
 		}
 
 		void VulkanDevice::immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function) {
-			std::lock_guard<std::mutex> lock(_asyncUploadContext.uploadMutex);
+			// 1. åˆ†é…ä¸€ä¸ªä¸´æ—¶çš„ Command Pool (å¿…é¡»åœ¨ Graphics Queue ä¸Šï¼Œå› ä¸ºåˆå§‹åŒ–æ“ä½œå¾€å¾€æ¶‰åŠå›¾å½¢å±éšœ)
+			VkCommandPoolCreateInfo poolInfo = {};
+			poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+			poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+			poolInfo.queueFamilyIndex = _graphicsQueueFamily;
 
-			VkCommandBuffer cmd = _asyncUploadContext.commandBuffer;
+			VkCommandPool tempPool;
+			VK_CHECK(vkCreateCommandPool(_device, &poolInfo, nullptr, &tempPool));
 
+			// 2. åˆ†é…ä¸´æ—¶çš„ Command Buffer
+			VkCommandBufferAllocateInfo allocInfo = {};
+			allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+			allocInfo.commandPool = tempPool;
+			allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+			allocInfo.commandBufferCount = 1;
+
+			VkCommandBuffer cmd;
+			VK_CHECK(vkAllocateCommandBuffers(_device, &allocInfo, &cmd));
+
+			// 3. å¼€å§‹å½•åˆ¶
 			VkCommandBufferBeginInfo cmdBeginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 			cmdBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
 			VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
+
+			// 4. æ‰§è¡Œç”¨æˆ·çš„æŒ‡ä»¤
 			function(cmd);
+
 			VK_CHECK(vkEndCommandBuffer(cmd));
 
-			_asyncUploadContext.uploadValue++;
+			// 5. æäº¤ç»™ Graphics Queue å¹¶æ­»ç­‰ (æ¯•ç«Ÿè¿™æ˜¯ immediate submit)
+			VkSubmitInfo submitInfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
+			submitInfo.commandBufferCount = 1;
+			submitInfo.pCommandBuffers = &cmd;
 
-			uint64_t signalValue = _asyncUploadContext.uploadValue;
-			VkTimelineSemaphoreSubmitInfo timelineInfo{ .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
-			timelineInfo.signalSemaphoreValueCount = 1;
-			timelineInfo.pSignalSemaphoreValues = &signalValue;
+			VkFenceCreateInfo fenceInfo = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+			VkFence tempFence;
+			VK_CHECK(vkCreateFence(_device, &fenceInfo, nullptr, &tempFence));
 
-			VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
-			submit.pNext = &timelineInfo;
-			submit.commandBufferCount = 1;
-			submit.pCommandBuffers = &cmd;
-			submit.signalSemaphoreCount = 1;
-			submit.pSignalSemaphores = &_asyncUploadContext.timelineSemaphore;
+			// æäº¤å¹¶é˜»å¡ç­‰å¾…
+			VK_CHECK(vkQueueSubmit(_graphicsQueue, 1, &submitInfo, tempFence));
+			VK_CHECK(vkWaitForFences(_device, 1, &tempFence, true, 9999999999));
 
-			VK_CHECK(vkQueueSubmit(_transferQueue, 1, &submit, VK_NULL_HANDLE));
-
-			// ×èÈûµÈ´ı GPU ´ïµ½Õâ¸ö timeline value (¹ı¶ÉÆÚÔİÊ±×èÈû)
-			VkSemaphoreWaitInfo waitInfo{ .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
-			waitInfo.semaphoreCount = 1;
-			waitInfo.pSemaphores = &_asyncUploadContext.timelineSemaphore;
-			waitInfo.pValues = &signalValue;
-			VK_CHECK(vkWaitSemaphores(_device, &waitInfo, UINT64_MAX));
-
-			VK_CHECK(vkResetCommandPool(_device, _asyncUploadContext.commandPool, 0));
+			// 6. æ¸…ç†ç°åœºï¼Œä¸ç•™ç—•è¿¹
+			vkDestroyFence(_device, tempFence, nullptr);
+			vkDestroyCommandPool(_device, tempPool, nullptr);
 		}
 
 		void VulkanDevice::init_staging_ring_buffer(size_t size) {
@@ -270,12 +273,12 @@ namespace Aero {
 
 			VkBufferCreateInfo bufferInfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 			bufferInfo.size = size;
-			bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT; // ×÷Îª¿½±´Ô´
+			bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT; // ä½œä¸ºæ‹·è´æº
 
 			VmaAllocationCreateInfo vmaallocInfo = {};
 			vmaallocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-			// ¹Ø¼üµã 1: MAPPED_BIT ±£Ö¤·ÖÅäºó mappedData Ö±½Ó¿ÉÓÃ£¬ÖÕÉú²»µ÷ vkMapMemory
-			// ¹Ø¼üµã 2: SEQUENTIAL_WRITE_BIT ÌáÊ¾Çı¶¯Ê¹ÓÃ Write-Combined ÄÚ´æ£¬ÌáÉı memcpy ¼«ËÙ
+			// å…³é”®ç‚¹ 1: MAPPED_BIT ä¿è¯åˆ†é…å mappedData ç›´æ¥å¯ç”¨ï¼Œç»ˆç”Ÿä¸è°ƒ vkMapMemory
+			// å…³é”®ç‚¹ 2: SEQUENTIAL_WRITE_BIT æç¤ºé©±åŠ¨ä½¿ç”¨ Write-Combined å†…å­˜ï¼Œæå‡ memcpy æé€Ÿ
 			vmaallocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
 			VmaAllocationInfo allocInfo;

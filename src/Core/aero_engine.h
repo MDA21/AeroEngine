@@ -1,8 +1,8 @@
 #pragma once
-#include "vk_types.h";
 #include "camera.h"
 #include "Core/Window.h"
 #include "RHI/VulkanDevice.h"
+#include "RHI/vk_types.h";
 #include "Renderer/SceneRenderer.h"
 
 struct GLFWwindow;

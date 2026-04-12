@@ -1,7 +1,7 @@
 #pragma once
-#include "vk_types.h"
-#include "camera.h"
+#include "Core/camera.h"
 #include "RHI/VulkanDevice.h"
+#include "RHI/vk_types.h";
 
 namespace Aero {
 	namespace Renderer {
@@ -20,10 +20,6 @@ namespace Aero {
 			void init_depth_image(uint32_t width, uint32_t height);
 			void update_global_descriptor_set();
 
-			// 内部使用的资源上传辅助函数 (暂留)
-			GPUMeshBuffers upload_mesh_data(const SceneData& scene);
-			AllocatedBuffer upload_ssbo_data(size_t bufferSize, const void* data);
-			AllocatedImage upload_texture(void* pixels, int width, int height, VkFormat format);
 			void update_bindless_texture(const AllocatedImage& image, uint32_t textureID);
 
 		private:

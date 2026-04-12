@@ -1,10 +1,10 @@
 #include "aero_engine.h"
 #include <iostream>
 #include <optional>
-#include "vk_initializers.h"
-#include "gltf_loader.h"
+#include "RHI//vk_initializers.h"
 #include "Core/KeyCodes.h"
 #include "Resource/asset_manager.h"
+#include "Resource/gltf_loader.h"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -49,6 +49,21 @@ void AeroEngine::init() {
 	std::optional<SceneData> sceneOpt = GLTFLoader::load_gltf(modelPath);
 	if (sceneOpt.has_value()) {
 		_sceneRenderer->upload_scene(sceneOpt.value());
+
+		auto& assetManager = Aero::Resource::AssetManager::Get();
+		uint64_t targetTimelineValue = assetManager.submit_async_uploads();
+
+		std::cout << "[AeroEngine] Scene data pushed to Ring Buffer. Waiting for GPU Transfer..." << std::endl;
+
+		VkSemaphoreWaitInfo waitInfo{ .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+		waitInfo.semaphoreCount = 1;
+		VkSemaphore timelineSem = _renderDevice->get_async_upload_context().timelineSemaphore;
+		waitInfo.pSemaphores = &timelineSem;
+		waitInfo.pValues = &targetTimelineValue;
+
+		VK_CHECK(vkWaitSemaphores(_renderDevice->get_device(), &waitInfo, UINT64_MAX));
+
+		std::cout << "[AeroEngine] GPU Transfer complete. Ready to render!" << std::endl;
 	}
 	else {
 		std::cerr << "[AeroEngine] CRITICAL: Failed to load startup scene!" << std::endl;

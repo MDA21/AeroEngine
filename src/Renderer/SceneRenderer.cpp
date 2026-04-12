@@ -1,11 +1,12 @@
 #include "SceneRenderer.h"
-#include "../vk_initializers.h"
-#include "../vk_pipelines.h"
+#include "RHI/vk_initializers.h"
+#include "RHI/vk_pipelines.h"
 #include <stb_image.h>
 #include <iostream>
 #include <array>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
+#include "Resource/asset_manager.h"
 
 namespace Aero {
     namespace Renderer {
@@ -445,202 +446,6 @@ namespace Aero {
             vkUpdateDescriptorSets(_renderDevice->get_device(), 3, writes, 0, nullptr);
         }
 
-        GPUMeshBuffers Aero::Renderer::SceneRenderer::upload_mesh_data(const SceneData& scene) {
-            VmaAllocator allocator = _renderDevice->get_allocator();
-
-            GPUMeshBuffers outBuffers;
-
-            const size_t vertexBufferSize = scene.vertices.size() * sizeof(Vertex);
-            const size_t indexBufferSize = scene.indices.size() * sizeof(uint32_t);
-            const size_t totalBufferSize = vertexBufferSize + indexBufferSize;
-
-            VkBufferCreateInfo stagingBufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-            stagingBufferInfo.size = totalBufferSize;
-            stagingBufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-            VmaAllocationCreateInfo stagingAllocInfo = {};
-            stagingAllocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
-            stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-            AllocatedBuffer stagingBuffer;
-            VmaAllocationInfo stagingAllocResult;
-            VK_CHECK(vmaCreateBuffer(allocator, &stagingBufferInfo, &stagingAllocInfo,
-                &stagingBuffer.buffer, &stagingBuffer.allocation, &stagingAllocResult));
-
-            void* mappedData = stagingAllocResult.pMappedData;
-            memcpy(mappedData, scene.vertices.data(), vertexBufferSize);
-            memcpy(static_cast<char*>(mappedData) + vertexBufferSize, scene.indices.data(), indexBufferSize);
-
-            VkBufferCreateInfo vboInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-            vboInfo.size = vertexBufferSize;
-            vboInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-            VkBufferCreateInfo iboInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-            iboInfo.size = indexBufferSize;
-            iboInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-            VmaAllocationCreateInfo vmaAllocInfo = {};
-            vmaAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
-            VK_CHECK(vmaCreateBuffer(allocator, &vboInfo, &vmaAllocInfo,
-                &outBuffers.vertexBuffer.buffer, &outBuffers.vertexBuffer.allocation, nullptr));
-
-            VK_CHECK(vmaCreateBuffer(allocator, &iboInfo, &vmaAllocInfo,
-                &outBuffers.indexBuffer.buffer, &outBuffers.indexBuffer.allocation, nullptr));
-
-            _renderDevice->immediate_submit([&](VkCommandBuffer cmd) {
-                VkBufferCopy vertexCopy = { 0, 0, vertexBufferSize };
-                vkCmdCopyBuffer(cmd, stagingBuffer.buffer, outBuffers.vertexBuffer.buffer, 1, &vertexCopy);
-
-                VkBufferCopy indexCopy = { vertexBufferSize, 0, indexBufferSize };
-                vkCmdCopyBuffer(cmd, stagingBuffer.buffer, outBuffers.indexBuffer.buffer, 1, &indexCopy);
-                });
-
-            vmaDestroyBuffer(allocator, stagingBuffer.buffer, stagingBuffer.allocation);
-
-            return outBuffers;
-        }
-
-        AllocatedBuffer Aero::Renderer::SceneRenderer::upload_ssbo_data(size_t bufferSize, const void* data) {
-            VmaAllocator allocator = _renderDevice->get_allocator();
-
-            // 注意这里第一行不用再算 bufferSize 了，直接用传进来的
-            VkBufferCreateInfo ssboInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-            ssboInfo.size = bufferSize;
-            ssboInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-            VmaAllocationCreateInfo vmaAllocInfo = {};
-            vmaAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
-            AllocatedBuffer ssboBuffer;
-            VK_CHECK(vmaCreateBuffer(allocator, &ssboInfo, &vmaAllocInfo,
-                &ssboBuffer.buffer, &ssboBuffer.allocation, nullptr));
-
-            VkBufferCreateInfo stagingInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-            stagingInfo.size = bufferSize;
-            stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-            VmaAllocationCreateInfo stagingAllocInfo = {};
-            stagingAllocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
-            stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-            AllocatedBuffer stagingBuffer;
-            VmaAllocationInfo stagingAllocResult;
-            VK_CHECK(vmaCreateBuffer(allocator, &stagingInfo, &stagingAllocInfo,
-                &stagingBuffer.buffer, &stagingBuffer.allocation, &stagingAllocResult));
-
-            // 使用传入的 data 指针进行拷贝
-            memcpy(stagingAllocResult.pMappedData, data, bufferSize);
-
-            _renderDevice->immediate_submit([&](VkCommandBuffer cmd) {
-                VkBufferCopy copyRegion = { 0, 0, bufferSize };
-                vkCmdCopyBuffer(cmd, stagingBuffer.buffer, ssboBuffer.buffer, 1, &copyRegion);
-                });
-
-            vmaDestroyBuffer(allocator, stagingBuffer.buffer, stagingBuffer.allocation);
-
-            return ssboBuffer;
-        }
-
-        AllocatedImage Aero::Renderer::SceneRenderer::upload_texture(void* pixels, int width, int height, VkFormat format) {
-            VmaAllocator allocator = _renderDevice->get_allocator();
-
-            uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
-            VkExtent3D imageExtent = { (uint32_t)width, (uint32_t)height, 1 };
-            VkDeviceSize imageSize = width * height * 4;
-
-            VkImageCreateInfo dimg_info{};
-            dimg_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-            dimg_info.imageType = VK_IMAGE_TYPE_2D;
-            dimg_info.format = format;
-            dimg_info.extent = imageExtent;
-            dimg_info.mipLevels = mipLevels;
-            dimg_info.arrayLayers = 1;
-            dimg_info.samples = VK_SAMPLE_COUNT_1_BIT;
-            dimg_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-            dimg_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-
-            VmaAllocationCreateInfo dimg_allocinfo{};
-            dimg_allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
-            AllocatedImage newImage;
-            newImage.imageFormat = format;
-            newImage.imageExtent = imageExtent;
-            VK_CHECK(vmaCreateImage(allocator, &dimg_info, &dimg_allocinfo,
-                &newImage.image, &newImage.allocation, nullptr));
-
-            VkBufferCreateInfo stagingInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-            stagingInfo.size = imageSize;
-            stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-            VmaAllocationCreateInfo stagingAllocInfo = {};
-            stagingAllocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
-            stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-            AllocatedBuffer stagingBuffer;
-            VmaAllocationInfo stagingAllocResult;
-            VK_CHECK(vmaCreateBuffer(allocator, &stagingInfo, &stagingAllocInfo, &stagingBuffer.buffer, &stagingBuffer.allocation, &stagingAllocResult));
-
-            memcpy(stagingAllocResult.pMappedData, pixels, static_cast<size_t>(imageSize));
-
-            // 3. 异步提交：Transition Layout (Undefined -> TransferDst) -> Copy Buffer To Image -> Transition Layout (TransferDst -> ShaderReadOnly)
-            _renderDevice->immediate_submit([&](VkCommandBuffer cmd) {
-                vkinit::transition_image_mip(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, mipLevels);
-
-                VkBufferImageCopy copyRegion = {};
-                copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                copyRegion.imageSubresource.mipLevel = 0;
-                copyRegion.imageSubresource.baseArrayLayer = 0;
-                copyRegion.imageSubresource.layerCount = 1;
-                copyRegion.imageExtent = imageExtent;
-                vkCmdCopyBufferToImage(cmd, stagingBuffer.buffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
-
-                int32_t mipWidth = width;
-                int32_t mipHeight = height;
-
-                for (uint32_t i = 1; i < mipLevels; i++) {
-                    vkinit::transition_image_mip(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i - 1, 1);
-
-                    VkImageBlit blit{};
-                    blit.srcOffsets[1] = { mipWidth, mipHeight, 1 };
-                    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                    blit.srcSubresource.mipLevel = i - 1;
-                    blit.srcSubresource.layerCount = 1;
-
-                    blit.dstOffsets[1] = { mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1 };
-                    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                    blit.dstSubresource.mipLevel = i;
-                    blit.dstSubresource.layerCount = 1;
-
-                    vkCmdBlitImage(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
-
-                    vkinit::transition_image_mip(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, i - 1, 1);
-
-                    if (mipWidth > 1) mipWidth /= 2;
-                    if (mipHeight > 1) mipHeight /= 2;
-                }
-
-                vkinit::transition_image_mip(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels - 1, 1);
-                });
-
-            vmaDestroyBuffer(allocator, stagingBuffer.buffer, stagingBuffer.allocation);
-
-            VkImageViewCreateInfo view_info{};
-            view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            view_info.image = newImage.image;
-            view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            view_info.format = format;
-            view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            view_info.subresourceRange.baseMipLevel = 0;
-            view_info.subresourceRange.levelCount = mipLevels;
-            view_info.subresourceRange.baseArrayLayer = 0;
-            view_info.subresourceRange.layerCount = 1;
-
-            VK_CHECK(vkCreateImageView(_renderDevice->get_device(), &view_info, nullptr, &newImage.view));
-
-            return newImage;
-        }
-
         void Aero::Renderer::SceneRenderer::update_bindless_texture(const AllocatedImage& image, uint32_t textureID) {
             VkDescriptorImageInfo imageBufferInfo{};
             imageBufferInfo.sampler = _defaultSamplerLinear;
@@ -659,89 +464,123 @@ namespace Aero {
             vkUpdateDescriptorSets(_renderDevice->get_device(), 1, &textureWrite, 0, nullptr);
         }
 
-        void Aero::Renderer::SceneRenderer::upload_scene(const SceneData& scene) {
-            std::cout << "[AeroEngine] Starting scene upload to GPU..." << std::endl;
+        void SceneRenderer::upload_scene(const SceneData& scene) {
+            auto& assetManager = Aero::Resource::AssetManager::Get();
 
-            VmaAllocator allocator = _renderDevice->get_allocator();
+            std::cout << "[SceneRenderer] Start async packing & uploading scene..." << std::endl;
 
-            uint32_t whitePixel = 0xFFFFFFFF; // RGBA 全部为 255
-            AllocatedImage defaultTexture = upload_texture(&whitePixel, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
-            _sceneTextures.push_back(defaultTexture); // 交给现有的资源数组统一管理销毁
+            size_t vertexBufferSize = scene.vertices.size() * sizeof(Vertex);
+            _mainMeshBuffers.vertexBuffer = assetManager.upload_buffer_async(
+                vertexBufferSize, scene.vertices.data(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
-            // 将 1024 个槽位全部初始化为安全的安全贴图
-            for (uint32_t i = 0; i < 4096; ++i) {
-                update_bindless_texture(defaultTexture, i);
+            size_t indexBufferSize = scene.indices.size() * sizeof(uint32_t);
+            _mainMeshBuffers.indexBuffer = assetManager.upload_buffer_async(
+                indexBufferSize, scene.indices.data(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+            size_t materialBufferSize = scene.materials.size() * sizeof(MaterialParams);
+            if (materialBufferSize > 0) {
+                _materialBuffer = assetManager.upload_buffer_async(
+                    materialBufferSize, scene.materials.data(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
             }
 
-            _mainMeshBuffers = upload_mesh_data(scene);
+            _sceneTextures.clear();
+            for (uint32_t i = 0; i < scene.images.size(); i++) {
+                const auto& img = scene.images[i];
+                size_t pixelSize = img.width * img.height * 4;
+
+                AllocatedImage tex = assetManager.upload_image_async(
+                    img.width, img.height, VK_FORMAT_R8G8B8A8_UNORM, img.pixels, pixelSize);
+
+                _sceneTextures.push_back(tex);
+
+                //把上传好的纹理当场插进 Bindless 描述符槽位！
+                update_bindless_texture(tex, i);
+            }
+
             _renderables = scene.subMeshes;
-
-            _materialBuffer = upload_ssbo_data(scene.materials.size() * sizeof(MaterialParams), scene.materials.data());
-
-            // 更新全局 Descriptor Set 的 Binding 0 (材质 SSBO)
             _instanceCount = static_cast<uint32_t>(scene.subMeshes.size());
-            std::vector<InstanceData> instances(_instanceCount);
-            for (size_t i = 0; i < _instanceCount; ++i) {
-                const SubMesh& mesh = scene.subMeshes[i];
-                instances[i].modelMatrix = glm::mat4(1.0f); // 当前 glTF 解析器还未提取节点 Transform，先填单位阵
 
-                //利用 float 存储 int，在 Shader 里用 floatBitsToUint 转回来，保证 vec4 对齐
+            std::vector<InstanceData> instances;
+            instances.reserve(_instanceCount);
+
+            for (uint32_t i = 0; i < _instanceCount; i++) {
+                const SubMesh& sm = scene.subMeshes[i];
+                InstanceData inst{};
+
+                inst.modelMatrix = glm::mat4(1.0f);
+
                 float matIDAsFloat;
-                uint32_t matID = mesh.materialIndex;
-                memcpy(&matIDAsFloat, &matID, sizeof(float));
+                memcpy(&matIDAsFloat, &sm.materialIndex, sizeof(float));
 
-                instances[i].aabbMin_MatID = glm::vec4(mesh.aabbMin, matIDAsFloat);
-                instances[i].aabbMax_Pad = glm::vec4(mesh.aabbMax, 0.0f);
-                instances[i].indexCount = mesh.indexCount;
-                instances[i].firstIndex = mesh.firstIndex;
-                instances[i].vertexOffset = mesh.vertexOffset;
+                inst.aabbMin_MatID = glm::vec4(sm.aabbMin, matIDAsFloat);
+                inst.aabbMax_Pad = glm::vec4(sm.aabbMax, 0.0f);
+                inst.indexCount = sm.indexCount;
+                inst.firstIndex = sm.firstIndex;
+                inst.vertexOffset = sm.vertexOffset;
+
+                instances.push_back(inst);
             }
 
-            _instanceBuffer = upload_ssbo_data(instances.size() * sizeof(InstanceData), instances.data());
+            if (!_renderables.empty()) {
+                size_t instanceBufferSize = instances.size() * sizeof(InstanceData);
+                _instanceBuffer = assetManager.upload_buffer_async(
+                    instanceBufferSize, instances.data(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-            VkBufferCreateInfo indirectInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-            indirectInfo.size = _instanceCount * sizeof(VkDrawIndexedIndirectCommand);
-            indirectInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                std::vector<VkDrawIndexedIndirectCommand> indirectCommands;
+                indirectCommands.reserve(_instanceCount);
 
-            VmaAllocationCreateInfo indirectAllocInfo = {};
-            indirectAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+                for (uint32_t i = 0; i < _instanceCount; i++) {
+                    const SubMesh& sm = scene.subMeshes[i];
+                    VkDrawIndexedIndirectCommand cmd{};
+                    cmd.indexCount = sm.indexCount;     // 这个网格有多少个顶点索引
+                    cmd.instanceCount = 1;                 // 默认画1个（ComputeShader 剔除时会改成0）
+                    cmd.firstIndex = sm.firstIndex;     // 索引偏移
+                    cmd.vertexOffset = sm.vertexOffset;   // 顶点偏移
+                    cmd.firstInstance = i;                 // Shader 中的 gl_InstanceIndex (对应 InstanceData 数组)
 
-            VK_CHECK(vmaCreateBuffer(allocator, &indirectInfo, &indirectAllocInfo,
-                &_drawIndirectBuffer.buffer, &_drawIndirectBuffer.allocation, nullptr));
+                    indirectCommands.push_back(cmd);
+                }
 
-            // 更新全局 Descriptor Set 的 Binding 0 (材质) 和 Binding 2 (Instance)
+                size_t indirectBufferSize = _instanceCount * sizeof(VkDrawIndexedIndirectCommand);
+
+                // 注意用法：作为 SSBO 供 Compute 写入，同时作为 Indirect 缓冲供 Draw 读取
+                _drawIndirectBuffer = assetManager.upload_buffer_async(
+                    indirectBufferSize, indirectCommands.data(),
+                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            }
+
+            // --- 5. 更新全局 Bindless 描述符集 ---
+            // 注意：这里 _sceneTextures 等现在已经是包含真实句柄的 AllocatedImage 了
+            // 它们的数据正在后台被搬运，但不妨碍我们在 CPU 侧先把 Descriptor Set 绑好
             update_global_descriptor_set();
 
-            //遍历图片并上传到 GPU 的 Bindless 数组
-            int loadedTextureCount = 0;
-            for (size_t i = 0; i < scene.images.size(); i++) {
-                const LoadedImage& img = scene.images[i];
+            _deletionQueue.push_function([=, this]() {
+                VmaAllocator allocator = _renderDevice->get_allocator();
+                VkDevice device = _renderDevice->get_device();
 
-                if (img.pixels != nullptr) {
-                    AllocatedImage gpuImage = upload_texture(img.pixels, img.width, img.height, VK_FORMAT_R8G8B8A8_UNORM);
-
-                    update_bindless_texture(gpuImage, static_cast<uint32_t>(i));
-
-                    _sceneTextures.push_back(gpuImage);
-
-                    stbi_image_free(img.pixels);
-                    loadedTextureCount++;
-                }
-            }
-
-            _deletionQueue.push_function([=]() {
-                vmaDestroyBuffer(allocator, _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
+                // 销毁网格 Buffer
                 vmaDestroyBuffer(allocator, _mainMeshBuffers.vertexBuffer.buffer, _mainMeshBuffers.vertexBuffer.allocation);
                 vmaDestroyBuffer(allocator, _mainMeshBuffers.indexBuffer.buffer, _mainMeshBuffers.indexBuffer.allocation);
-                vmaDestroyBuffer(allocator, _materialBuffer.buffer, _materialBuffer.allocation);
-                vmaDestroyBuffer(allocator, _instanceBuffer.buffer, _instanceBuffer.allocation);
-                for (const AllocatedImage& img : _sceneTextures) {
-                    vkDestroyImageView(_renderDevice->get_device(), img.view, nullptr);
-                    vmaDestroyImage(allocator, img.image, img.allocation);
+
+                // 销毁 SSBO 与 Indirect Buffer
+                if (_materialBuffer.buffer != VK_NULL_HANDLE) {
+                    vmaDestroyBuffer(allocator, _materialBuffer.buffer, _materialBuffer.allocation);
+                }
+                if (_instanceBuffer.buffer != VK_NULL_HANDLE) {
+                    vmaDestroyBuffer(allocator, _instanceBuffer.buffer, _instanceBuffer.allocation);
+                }
+                if (_drawIndirectBuffer.buffer != VK_NULL_HANDLE) {
+                    vmaDestroyBuffer(allocator, _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
+                }
+
+                // 销毁所有纹理
+                for (auto& tex : _sceneTextures) {
+                    vkDestroyImageView(device, tex.view, nullptr);
+                    vmaDestroyImage(allocator, tex.image, tex.allocation);
                 }
                 });
 
-            std::cout << "[AeroEngine] Successfully uploaded scene to GPU! (Textures loaded: " << loadedTextureCount << ")" << std::endl;
+            std::cout << "[SceneRenderer] Scene data queued for transfer successfully." << std::endl;
         }
 
     } // namespace Renderer

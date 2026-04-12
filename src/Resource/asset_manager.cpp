@@ -1,7 +1,7 @@
 #include "asset_manager.h"
 #include "gltf_loader.h"
 #include <iostream>
-#include "vk_initializers.h"
+#include "RHI/vk_initializers.h"
 
 namespace Aero::Resource {
 
@@ -17,7 +17,19 @@ namespace Aero::Resource {
 
     void AssetManager::cleanup() {
         std::lock_guard<std::mutex> lock(_assetMutex);
-        // 清理所有 GPU 资源... (后续实现，配合 deletion queue)
+        std::lock_guard<std::mutex> stagingLock(_stagingMutex); // 锁住环形区
+
+        // 1. 销毁遗留的 Command Buffer 弹匣
+        for (auto& task : _stagingTasks) {
+            if (task.cmdBufferToFree != VK_NULL_HANDLE) {
+                vkFreeCommandBuffers(_device->get_device(),
+                    _device->get_async_upload_context().commandPool,
+                    1, &task.cmdBufferToFree);
+            }
+        }
+        _stagingTasks.clear();
+
+        // 2. 清理资源注册表
         _loadedScenes.clear();
         std::cout << "[AssetManager] Cleaned up." << std::endl;
     }
@@ -75,7 +87,7 @@ namespace Aero::Resource {
         }
 
         std::unique_lock<std::mutex> lock(_stagingMutex);
-
+        bool forcedSubmit = false; //是否已经为了腾空间而强制提交过
         // 如果空间不够，或者发生环形折断（需要连续内存），则死循环等待 GPU 消化
         // 实际的 3A 引擎这里会 yield 线程或者分配临时 Buffer，我们先用简单可靠的自旋等待
         while (true) {
@@ -105,8 +117,19 @@ namespace Aero::Resource {
                     _stagingTasks.push_back({ _device->get_async_upload_context().uploadValue + 1, padding });
                 }
             }
-            // 空间不够，休眠一下给 GPU 时间
-            // std::this_thread::sleep_for(std::chrono::microseconds(100));
+            else {
+                // --- 【核心修复：打破死锁】 ---
+                // 空间不够了，说明 64MB 已经被填满。我们必须立即把积压的指令提交给 GPU！
+                if (!forcedSubmit) {
+                    lock.unlock(); // 必须先解锁，避免与 submit 内部的锁冲突
+                    submit_async_uploads(); // 把弹匣打出去！
+                    lock.lock();
+                    forcedSubmit = true;
+                }
+
+                // 可选：稍微休眠一下让出 CPU，防止 while(true) 占满单核 100% 性能
+                // std::this_thread::yield(); 
+            }
         }
     }
 

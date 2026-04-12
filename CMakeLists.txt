@@ -59,12 +59,12 @@ set(IMGUI_SOURCES
 
 add_executable(${PROJECT_NAME} 
     src/main.cpp
-    src/aero_engine.cpp
-    src/aero_engine.h
-    src/vk_types.h
- "src/vk_context.cpp" "src/vk_context.h" "src/vk_types.cpp" "src/vk_initializers.cpp" "src/vk_initializers.h" "src/vk_pipelines.h" "src/vk_pipelines.cpp"
+    "src/Core/aero_engine.cpp"
+    "src/Core/aero_engine.h"
+    "src/RHI/vk_types.h"
+   "src/RHI/vk_types.cpp"  "src/RHI/vk_initializers.h" "src/RHI/vk_pipelines.h" "src/RHI/vk_pipelines.cpp"
  ${IMGUI_SOURCES}
- "src/gltf_loader.h" "src/gltf_loader.cpp" "src/camera.h" "src/camera.cpp" "src/Core/Window.h" "src/Core/Window.cpp" "src/Core/KeyCodes.h" "src/RHI/VulkanDevice.h" "src/RHI/VulkanDevice.cpp" "src/Renderer/SceneRenderer.h" "src/Renderer/SceneRenderer.cpp" "src/Resource/asset_manager.h" "src/Resource/asset_manager.cpp")
+ "src/Resource/gltf_loader.h" "src/Resource/gltf_loader.cpp" "src/Core/camera.h" "src/Core/camera.cpp" "src/Core/Window.h" "src/Core/Window.cpp" "src/Core/KeyCodes.h" "src/RHI/VulkanDevice.h" "src/RHI/VulkanDevice.cpp" "src/Renderer/SceneRenderer.h" "src/Renderer/SceneRenderer.cpp" "src/Resource/asset_manager.h" "src/Resource/asset_manager.cpp")
 
 target_compile_definitions(AeroEngine PRIVATE IMGUI_IMPL_VULKAN_USE_VOLK)
 
