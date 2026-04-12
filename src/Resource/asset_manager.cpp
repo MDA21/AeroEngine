@@ -1,4 +1,4 @@
-#include "asset_manager.h"
+ï»¿#include "asset_manager.h"
 #include "gltf_loader.h"
 #include <iostream>
 #include "RHI/vk_initializers.h"
@@ -16,10 +16,9 @@ namespace Aero::Resource {
     }
 
     void AssetManager::cleanup() {
-        std::lock_guard<std::mutex> lock(_assetMutex);
-        std::lock_guard<std::mutex> stagingLock(_stagingMutex); // Ëø×¡»·ĞÎÇø
+        std::scoped_lock multiLock(_assetMutex, _stagingMutex);
 
-        // 1. Ïú»ÙÒÅÁôµÄ Command Buffer µ¯Ï»
+        // 1. é”€æ¯é—ç•™çš„ Command Buffer å¼¹åŒ£
         for (auto& task : _stagingTasks) {
             if (task.cmdBufferToFree != VK_NULL_HANDLE) {
                 vkFreeCommandBuffers(_device->get_device(),
@@ -29,7 +28,7 @@ namespace Aero::Resource {
         }
         _stagingTasks.clear();
 
-        // 2. ÇåÀí×ÊÔ´×¢²á±í
+        // 2. æ¸…ç†èµ„æºæ³¨å†Œè¡¨
         _loadedScenes.clear();
         std::cout << "[AssetManager] Cleaned up." << std::endl;
     }
@@ -44,8 +43,8 @@ namespace Aero::Resource {
         std::lock_guard<std::mutex> lock(_assetMutex);
         _loadedScenes[name] = std::move(sceneOpt.value());
 
-        // ÕâÀïÖ»ÊÇ½âÎöÁËÊı¾İ£¬»¹Ã»ÓĞÉÏ´«µ½ GPU
-        // ÏÂÒ»²½ÎÒÃÇÒª°ÑÉÏ´«Âß¼­´Ó SceneRenderer °á¹ıÀ´
+        // è¿™é‡Œåªæ˜¯è§£æäº†æ•°æ®ï¼Œè¿˜æ²¡æœ‰ä¸Šä¼ åˆ° GPU
+        // ä¸‹ä¸€æ­¥æˆ‘ä»¬è¦æŠŠä¸Šä¼ é€»è¾‘ä» SceneRenderer æ¬è¿‡æ¥
 
         return true;
     }
@@ -65,35 +64,30 @@ namespace Aero::Resource {
         std::lock_guard<std::mutex> lock(_stagingMutex);
         while (!_stagingTasks.empty() && _stagingTasks.front().timelineValue <= currentGpuTimeline) {
             auto& task = _stagingTasks.front();
-            _stagingUsedSpace -= task.size; // ÊÍ·Å¿Õ¼ä
+            _stagingUsedSpace -= task.size;
 
             auto& ringBuffer = _device->get_staging_ring_buffer();
             ringBuffer.tail = (ringBuffer.tail + task.size) % ringBuffer.totalSize;
 
             if (task.cmdBufferToFree != VK_NULL_HANDLE) {
-                vkFreeCommandBuffers(_device->get_device(), _device->get_async_upload_context().commandPool, 1, &task.cmdBufferToFree);
+                vkFreeCommandBuffers(_device->get_device(),
+                    _device->get_async_upload_context().commandPool,
+                    1, &task.cmdBufferToFree);
             }
-
             _stagingTasks.pop_front();
         }
     }
 
     size_t AssetManager::allocate_staging_space(size_t size) {
         auto& ringBuffer = _device->get_staging_ring_buffer();
-
-        if (size > ringBuffer.totalSize) {
-            std::cerr << "[AssetManager] ERROR: Asset size (" << size << ") exceeds entire staging buffer!" << std::endl;
-            abort();
-        }
+        if (size > ringBuffer.totalSize) abort();
 
         std::unique_lock<std::mutex> lock(_stagingMutex);
-        bool forcedSubmit = false; //ÊÇ·ñÒÑ¾­ÎªÁËÌÚ¿Õ¼ä¶øÇ¿ÖÆÌá½»¹ı
-        // Èç¹û¿Õ¼ä²»¹»£¬»òÕß·¢Éú»·ĞÎÕÛ¶Ï£¨ĞèÒªÁ¬ĞøÄÚ´æ£©£¬ÔòËÀÑ­»·µÈ´ı GPU Ïû»¯
-        // Êµ¼ÊµÄ 3A ÒıÇæÕâÀï»á yield Ïß³Ì»òÕß·ÖÅäÁÙÊ± Buffer£¬ÎÒÃÇÏÈÓÃ¼òµ¥¿É¿¿µÄ×ÔĞıµÈ´ı
+        bool forcedSubmit = false;
+
         while (true) {
-            // Ã¿´Î¼ì²éÇ°ÏÈ³¢ÊÔ»ØÊÕ¿Õ¼ä
             lock.unlock();
-            update_staging_tail();
+            update_staging_tail(); //å°è¯•å›æ”¶å·²å®Œæˆçš„ç©ºé—´
             lock.lock();
 
             bool hasSpace = (_stagingUsedSpace + size) <= ringBuffer.totalSize;
@@ -107,28 +101,23 @@ namespace Aero::Resource {
                     return offset;
                 }
                 else {
-                    // ·¢ÉúÁËÕÛ¶Ï (Wrap-around)£¬ÎÒÃÇĞèÒªÌø¹ıÎ²²¿ËéÆ¬£¬Ö±½Ó´Ó 0 ¿ªÊ¼
-                    // °ÑÎ²²¿Ê£Óà¿Õ¼äµ±×÷¡°ÒÑÊ¹ÓÃ¡±²¢ÍÆÈëÒ»¸ö¼ÙµÄ Task µÈ´ı»ØÊÕ
+                    // å‘ç”ŸæŠ˜æ–­ï¼šå‹å…¥ paddingï¼Œå¹¶å°† head å½’é›¶
                     size_t padding = ringBuffer.totalSize - ringBuffer.head;
                     _stagingUsedSpace += padding;
                     ringBuffer.head = 0;
-
-                    // ×¢Òâ£ºÕâÀïµÄ timelineValue °ó¶¨µÄÊÇµ±Ç°¼´½«Ìá½»µÄÏÂÒ»ÌõÖ¸Áî
-                    _stagingTasks.push_back({ _device->get_async_upload_context().uploadValue + 1, padding });
+                    _stagingTasks.push_back({ _device->get_async_upload_context().uploadValue + 1, padding, VK_NULL_HANDLE });
+                    // æ³¨æ„è¿™é‡Œæ²¡æœ‰ returnï¼Œå®ƒä¼šè¿›å…¥ä¸‹ä¸€æ¬¡ while å¾ªç¯ï¼Œåœ¨ head=0 å¤„æˆåŠŸåˆ†é…
                 }
             }
             else {
-                // --- ¡¾ºËĞÄĞŞ¸´£º´òÆÆËÀËø¡¿ ---
-                // ¿Õ¼ä²»¹»ÁË£¬ËµÃ÷ 64MB ÒÑ¾­±»ÌîÂú¡£ÎÒÃÇ±ØĞëÁ¢¼´°Ñ»ıÑ¹µÄÖ¸ÁîÌá½»¸ø GPU£¡
+                // ç©ºé—´ä¸è¶³ï¼Œæ‰“ç ´æ­»é”
                 if (!forcedSubmit) {
-                    lock.unlock(); // ±ØĞëÏÈ½âËø£¬±ÜÃâÓë submit ÄÚ²¿µÄËø³åÍ»
-                    submit_async_uploads(); // °Ñµ¯Ï»´ò³öÈ¥£¡
+                    lock.unlock();
+                    submit_async_uploads();
                     lock.lock();
                     forcedSubmit = true;
                 }
-
-                // ¿ÉÑ¡£ºÉÔÎ¢ĞİÃßÒ»ÏÂÈÃ³ö CPU£¬·ÀÖ¹ while(true) Õ¼Âúµ¥ºË 100% ĞÔÄÜ
-                // std::this_thread::yield(); 
+                std::this_thread::yield();
             }
         }
     }
@@ -163,7 +152,7 @@ namespace Aero::Resource {
         vkCmdCopyBuffer(uploadContext.commandBuffer, ringBuffer.buffer, newBuffer.buffer, 1, &copyRegion);
 
         {
-            std::lock_guard<std::mutex> stagingLock(_stagingMutex);
+            std::lock_guard<std::mutex> lock(_stagingMutex);
             _stagingTasks.push_back({ uploadContext.uploadValue + 1, bufferSize });
         }
 
@@ -228,7 +217,7 @@ namespace Aero::Resource {
         vkinit::transition_image(uploadContext.commandBuffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         {
-            std::lock_guard<std::mutex> stagingLock(_stagingMutex);
+            std::lock_guard<std::mutex> lock(_stagingMutex);
             _stagingTasks.push_back({ uploadContext.uploadValue + 1, pixelSize, VK_NULL_HANDLE });
         }
 
@@ -269,12 +258,12 @@ namespace Aero::Resource {
         VK_CHECK(vkBeginCommandBuffer(newCmd, &beginInfo));
 
         {
-            std::lock_guard<std::mutex> stagingLock(_stagingMutex);
+            std::lock_guard<std::mutex> lock(_stagingMutex);
             _stagingTasks.push_back({ signalValue, 0, uploadContext.commandBuffer });
         }
 
         uploadContext.commandBuffer = newCmd;
 
-        return signalValue; // ·µ»ØÒ»¸ö½ø¶ÈÆ±¾İ£¬Ö÷Ïß³Ì¿ÉÒÔÆ¾´ËÆ±¾İ²éÑ¯ÊÇ·ñ¼ÓÔØÍê³É
+        return signalValue; // è¿”å›ä¸€ä¸ªè¿›åº¦ç¥¨æ®ï¼Œä¸»çº¿ç¨‹å¯ä»¥å‡­æ­¤ç¥¨æ®æŸ¥è¯¢æ˜¯å¦åŠ è½½å®Œæˆ
     }
 }

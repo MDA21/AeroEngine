@@ -5,6 +5,7 @@
 #include <string>
 #include <memory>
 #include <mutex>
+#include <atomic>
 #include <optional>
 #include <deque>
 
@@ -54,8 +55,8 @@ namespace Aero::Resource {
         void update_staging_tail(); // 回收 GPU 已读取的空间
 
         std::mutex _stagingMutex;
-        std::deque<StagingTask> _stagingTasks; // 待回收的任务队列
-        size_t _stagingUsedSpace{ 0 };         // 当前已用空间
+        std::deque<StagingTask> _stagingTasks;
+        size_t _stagingUsedSpace{ 0 };
     };
     
 }

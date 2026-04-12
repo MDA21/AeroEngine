@@ -80,11 +80,11 @@
 
 ###  阶段 3.5：引擎化重构 (基础设施补完 - 优先攻克)
 
-- [ ] **代码物理拆分与系统解耦 (Project Structure)**
+- [x] **代码物理拆分与系统解耦 (Project Structure)**
 
-目前所有代码平铺在 `src` 下，我们需要按职责划分模块，建立真正的引擎目录树：
+​		目前所有代码平铺在 `src` 下，我们需要按职责划分模块，建立真正的引擎目录树：
 
-- **Core**: 窗口系统、输入处理、基础数学、日志。
+- ​	**Core**: 窗口系统、输入处理、基础数学、日志。
   - **RHI (Render Hardware Interface)**: 把 `VulkanContext`、管线构建、交换链封装得更彻底，向上层隐藏 Vulkan 细节。
   - **Renderer**: 剥离 `AeroEngine::draw()` 中的逻辑，建立独立的渲染器系统（将 Compute Culling 和 Graphics Draw 拆分为独立的 Pass 函数）。
   - **Resource**: 负责模型、纹理的加载。
@@ -95,7 +95,7 @@
 
   - **引用计数：** 统一且自动地管理 Mesh、Material、Texture 的加载与生命周期。
 
-- [ ] **异步上传系统 (Async Transfer)：**
+- [x] **异步上传系统 (Async Transfer)：**
   - 真正激活物理设备中的专用 `transferQueue`。
   - 使用 Timeline Semaphore 和 Staging Ring Buffer 实现后台资源流式加载，消除主线程卡顿。
 
@@ -139,6 +139,8 @@
 
 ---
 > "The magic of computer graphics is that you can build the universe from scratch, provided you align your memory correctly."
+
+
 
 
 

@@ -493,7 +493,7 @@ namespace Aero {
 
                 _sceneTextures.push_back(tex);
 
-                //把上传好的纹理当场插进 Bindless 描述符槽位！
+                //把上传好的纹理当场插进 Bindless 描述符槽位
                 update_bindless_texture(tex, i);
             }
 
