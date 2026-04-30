@@ -21,6 +21,7 @@ std::optional<SceneData> GLTFLoader::load_gltf(const std::string& filePath) {
 	cgltf_load_buffers(&options, data, filePath.c_str());
 
 	SceneData scene;
+	scene.meshCount = static_cast<uint32_t>(data->meshes_count);
     for (cgltf_size i = 0; i < data->materials_count; ++i) {
         const cgltf_material& cgltfMat = data->materials[i];
         MaterialParams mat = {};
@@ -89,7 +90,7 @@ std::optional<SceneData> GLTFLoader::load_gltf(const std::string& filePath) {
             subMesh.materialIndex = primitive.material ?
                 static_cast<uint32_t>(std::distance(data->materials, primitive.material)) : 0;
 
-            // ÌáÈ¡Ë÷Òý
+            // ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½
             if (primitive.indices) {
                 subMesh.indexCount = static_cast<uint32_t>(primitive.indices->count);
                 for (cgltf_size k = 0; k < primitive.indices->count; ++k) {
@@ -97,7 +98,7 @@ std::optional<SceneData> GLTFLoader::load_gltf(const std::string& filePath) {
                 }
             }
             else {
-                continue; // ÔÝ²»Ö§³ÖÎÞË÷Òý»æÖÆ
+                continue; // ï¿½Ý²ï¿½Ö§ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
             }
 
             size_t vertexCount = 0;
@@ -151,18 +152,18 @@ std::optional<SceneData> GLTFLoader::load_gltf(const std::string& filePath) {
         const cgltf_image& cgltfImage = data->images[i];
         LoadedImage img = {};
 
-        // Ç¿ÖÆÒªÇó stb_image ¼ÓÔØ³ö 4 Í¨µÀ (RGBA)£¬ÎªÁË GPU ÄÚ´æ¶ÔÆë
+        // Ç¿ï¿½ï¿½Òªï¿½ï¿½ stb_image ï¿½ï¿½ï¿½Ø³ï¿½ 4 Í¨ï¿½ï¿½ (RGBA)ï¿½ï¿½Îªï¿½ï¿½ GPU ï¿½Ú´ï¿½ï¿½ï¿½ï¿½
         int desiredChannels = 4;
 
         if (cgltfImage.buffer_view) {
-            // Çé¿ö A: Í¼Æ¬±»´ò°ü½øÁË¶þ½øÖÆ Buffer (Èç .glb)
+            // ï¿½ï¿½ï¿½ A: Í¼Æ¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ë¶ï¿½ï¿½ï¿½ï¿½ï¿½ Buffer (ï¿½ï¿½ .glb)
             unsigned char* bufferData = (unsigned char*)cgltfImage.buffer_view->buffer->data + cgltfImage.buffer_view->offset;
             size_t bufferSize = cgltfImage.buffer_view->size;
 
             img.pixels = stbi_load_from_memory(bufferData, (int)bufferSize, &img.width, &img.height, &img.channels, desiredChannels);
         }
         else if (cgltfImage.uri) {
-            // Çé¿ö B: Í¼Æ¬ÊÇÍâ²¿ÎÄ¼þ£¬ÐèÒªÆ´½Ó¾ø¶ÔÂ·¾¶
+            // ï¿½ï¿½ï¿½ B: Í¼Æ¬ï¿½ï¿½ï¿½â²¿ï¿½Ä¼ï¿½ï¿½ï¿½ï¿½ï¿½ÒªÆ´ï¿½Ó¾ï¿½ï¿½ï¿½Â·ï¿½ï¿½
             std::string imagePath = (basePath / cgltfImage.uri).string();
             img.pixels = stbi_load(imagePath.c_str(), &img.width, &img.height, &img.channels, desiredChannels);
         }

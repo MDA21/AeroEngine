@@ -17,7 +17,10 @@ namespace Aero {
             throw std::runtime_error("Failed to create GLFW window");
         }
 
-        // ³õÊ¼»¯Ê±¼ä»ù×¼
+        glfwSetWindowUserPointer(_window, this);
+        glfwSetFramebufferSizeCallback(_window, framebuffer_size_callback);
+
+        // ï¿½ï¿½Ê¼ï¿½ï¿½Ê±ï¿½ï¿½ï¿½×¼
         _lastFrameTime = static_cast<float>(glfwGetTime());
     }
 
@@ -33,12 +36,12 @@ namespace Aero {
     void Window::poll_events() {
         glfwPollEvents();
 
-        // 1. ×Ô¶¯¼ÆËã DeltaTime
+        // 1. ï¿½Ô¶ï¿½ï¿½ï¿½ï¿½ï¿½ DeltaTime
         float currentFrameTime = static_cast<float>(glfwGetTime());
         _deltaTime = currentFrameTime - _lastFrameTime;
         _lastFrameTime = currentFrameTime;
 
-        // 2. ×Ô¶¯¼ÆËãÊó±êÎ»ÒÆ (Mouse Delta)
+        // 2. ï¿½Ô¶ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î»ï¿½ï¿½ (Mouse Delta)
         double xpos, ypos;
         glfwGetCursorPos(_window, &xpos, &ypos);
         glm::vec2 currentMousePos = { static_cast<float>(xpos), static_cast<float>(ypos) };
@@ -75,10 +78,20 @@ namespace Aero {
     void Window::set_cursor_mode(bool locked) {
         glfwSetInputMode(_window, GLFW_CURSOR, locked ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
 
-        // ÊÍ·ÅÊó±êÊ±£¬ÖØÖÃ _firstMouse ±êÖ¾£¬·ÀÖ¹ÏÂ´ÎÓÒ¼üµã»÷Ê±ÊÓ½ÇË²ÒÆ
         if (!locked) {
             _firstMouse = true;
         }
+    }
+
+    void Window::framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+        auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
+        if (!self) {
+            return;
+        }
+
+        self->_width = static_cast<uint32_t>(width);
+        self->_height = static_cast<uint32_t>(height);
+        self->_framebufferResized = true;
     }
 
 } // namespace Aero

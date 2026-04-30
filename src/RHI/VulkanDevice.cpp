@@ -16,6 +16,9 @@ namespace Aero {
 			init_staging_ring_buffer(64 * 1024 * 1024); // 64 MB
 			init_commands();
 			init_sync_structures();
+			_deletionQueue->push_function([this]() {
+				cleanup_swapchain();
+				});
 
 			std::cout << "[RHI] Vulkan Device successfully initialized." << std::endl;
 		}
@@ -66,6 +69,9 @@ namespace Aero {
 				.value();
 
 			_chosenGPU = physicalDevice.physical_device;
+			VkPhysicalDeviceProperties gpuProperties{};
+			vkGetPhysicalDeviceProperties(_chosenGPU, &gpuProperties);
+			_timestampPeriodNs = gpuProperties.limits.timestampPeriod;
 
 			vkb::DeviceBuilder deviceBuilder{ physicalDevice };
 			vkb::Device vkbDevice = deviceBuilder.add_pNext(&features13).add_pNext(&features12).build().value();
@@ -100,11 +106,33 @@ namespace Aero {
 			_swapchainImageFormat = vkbSwapchain.image_format;
 			_swapchainImages = vkbSwapchain.get_images().value();
 			_swapchainImageViews = vkbSwapchain.get_image_views().value();
+		}
 
-			_deletionQueue->push_function([=]() {
-				for (VkImageView view : _swapchainImageViews) vkDestroyImageView(_device, view, nullptr);
+		void VulkanDevice::cleanup_swapchain() {
+			for (VkImageView view : _swapchainImageViews) {
+				vkDestroyImageView(_device, view, nullptr);
+			}
+			_swapchainImageViews.clear();
+			_swapchainImages.clear();
+
+			if (_swapchain != VK_NULL_HANDLE) {
 				vkDestroySwapchainKHR(_device, _swapchain, nullptr);
-				});
+				_swapchain = VK_NULL_HANDLE;
+			}
+		}
+
+		void VulkanDevice::recreate_swapchain(Aero::Window* window) {
+			int width = 0;
+			int height = 0;
+			glfwGetFramebufferSize(window->handle(), &width, &height);
+			while (width == 0 || height == 0) {
+				glfwWaitEvents();
+				glfwGetFramebufferSize(window->handle(), &width, &height);
+			}
+
+			VK_CHECK(vkDeviceWaitIdle(_device));
+			cleanup_swapchain();
+			init_swapchain(window);
 		}
 
 		void VulkanDevice::init_allocator() {
@@ -158,7 +186,13 @@ namespace Aero {
 
 				VK_CHECK(vkAllocateCommandBuffers(_device, &cmdAllocInfo, &_frames[i].mainCommandBuffer));
 
+				VkQueryPoolCreateInfo queryPoolInfo{ .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+				queryPoolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+				queryPoolInfo.queryCount = GPU_TIMESTAMP_QUERY_COUNT;
+				VK_CHECK(vkCreateQueryPool(_device, &queryPoolInfo, nullptr, &_frames[i].timestampQueryPool));
+
 				_deletionQueue->push_function([=]() {
+					vkDestroyQueryPool(_device, _frames[i].timestampQueryPool, nullptr);
 					vkDestroyCommandPool(_device, _frames[i].commandPool, nullptr);
 					});
 			}

@@ -1,6 +1,7 @@
-﻿#include "asset_manager.h"
+#include "asset_manager.h"
 #include "gltf_loader.h"
 #include <iostream>
+#include <chrono>
 #include "RHI/vk_initializers.h"
 
 namespace Aero::Resource {
@@ -56,6 +57,10 @@ namespace Aero::Resource {
             return it->second;
         }
         return std::nullopt;
+    }
+
+    UploadStats AssetManager::get_upload_stats() const {
+        return _uploadStats;
     }
 
     void AssetManager::update_staging_tail() {
@@ -154,6 +159,7 @@ namespace Aero::Resource {
         {
             std::lock_guard<std::mutex> lock(_stagingMutex);
             _stagingTasks.push_back({ uploadContext.uploadValue + 1, bufferSize });
+            _pendingUploadBytes += bufferSize;
         }
 
         return newBuffer;
@@ -219,12 +225,14 @@ namespace Aero::Resource {
         {
             std::lock_guard<std::mutex> lock(_stagingMutex);
             _stagingTasks.push_back({ uploadContext.uploadValue + 1, pixelSize, VK_NULL_HANDLE });
+            _pendingUploadBytes += pixelSize;
         }
 
         return newImage;
     }
 
     uint64_t AssetManager::submit_async_uploads() {
+        auto submitStart = std::chrono::high_resolution_clock::now();
         auto& uploadContext = _device->get_async_upload_context();
         std::lock_guard<std::mutex> uploadLock(uploadContext.uploadMutex);
 
@@ -263,6 +271,12 @@ namespace Aero::Resource {
         }
 
         uploadContext.commandBuffer = newCmd;
+
+        auto submitEnd = std::chrono::high_resolution_clock::now();
+        _uploadStats.lastSubmitCpuMs = std::chrono::duration<double, std::milli>(submitEnd - submitStart).count();
+        _uploadStats.lastSubmittedBytes = _pendingUploadBytes;
+        _uploadStats.lastTimelineValue = signalValue;
+        _pendingUploadBytes = 0;
 
         return signalValue; // 返回一个进度票据，主线程可以凭此票据查询是否加载完成
     }

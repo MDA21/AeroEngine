@@ -117,6 +117,7 @@ struct LoadedImage {
 
 struct SceneData
 {
+	uint32_t meshCount{ 0 };
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
 	std::vector<SubMesh> subMeshes;

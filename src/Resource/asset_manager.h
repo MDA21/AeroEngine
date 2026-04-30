@@ -11,10 +11,16 @@
 
 namespace Aero::Resource {
 
+    struct UploadStats {
+        size_t lastSubmittedBytes{ 0 };
+        double lastSubmitCpuMs{ 0.0 };
+        uint64_t lastTimelineValue{ 0 };
+    };
+
     struct StagingTask {
-        uint64_t timelineValue; // µ± GPU ´ïµ½Õâ¸öÖµÊ±...
-        size_t size;            // ...ÊÍ·ÅÕâÃ´¶à×Ö½ÚµÄ¿Õ¼ä
-        VkCommandBuffer cmdBufferToFree{ VK_NULL_HANDLE }; //ÓÃÍê¼´»ÙµÄµ¯Ï»
+        uint64_t timelineValue; // ï¿½ï¿½ GPU ï¿½ïµ½ï¿½ï¿½ï¿½ÖµÊ±...
+        size_t size;            // ...ï¿½Í·ï¿½ï¿½ï¿½Ã´ï¿½ï¿½ï¿½Ö½ÚµÄ¿Õ¼ï¿½
+        VkCommandBuffer cmdBufferToFree{ VK_NULL_HANDLE }; //ï¿½ï¿½ï¿½ê¼´ï¿½ÙµÄµï¿½Ï»
     };
 
     class AssetManager {
@@ -24,10 +30,10 @@ namespace Aero::Resource {
         void init(Aero::RHI::VulkanDevice* device);
         void cleanup();
 
-        // Î´À´½«¸ÄÎªÕæÕýµÄÒì²½£¬Ä¿Ç°ÏÈ´î½¨Í¬²½×¢²á±íµÄ¼Ü×Ó
+        // Î´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Îªï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ì²½ï¿½ï¿½Ä¿Ç°ï¿½È´î½¨Í¬ï¿½ï¿½×¢ï¿½ï¿½ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½
         bool load_scene_sync(const std::string& name, const std::string& filePath);
 
-        // »ñÈ¡×ÊÔ´ (ºóÐø SceneRenderer Í¨¹ýÕâÐ©½Ó¿ÚÄÃÊý¾Ý)
+        // ï¿½ï¿½È¡ï¿½ï¿½Ô´ (ï¿½ï¿½ï¿½ï¿½ SceneRenderer Í¨ï¿½ï¿½ï¿½ï¿½Ð©ï¿½Ó¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½)
         std::optional<SceneData> get_scene(const std::string& name);
 
     private:
@@ -38,25 +44,28 @@ namespace Aero::Resource {
 
         Aero::RHI::VulkanDevice* _device{ nullptr };
 
-        // ×ÊÔ´×¢²á±í (¼ÓËø±£»¤£¬ÒòÎªÎ´À´ºóÌ¨Ïß³Ì»áÍùÀïÐ´)
+        // ï¿½ï¿½Ô´×¢ï¿½ï¿½ï¿½ (ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ÎªÎ´ï¿½ï¿½ï¿½ï¿½Ì¨ï¿½ß³Ì»ï¿½ï¿½ï¿½ï¿½ï¿½Ð´)
         std::mutex _assetMutex;
         std::unordered_map<std::string, SceneData> _loadedScenes;
 
-        // ºóÐøÌí¼Ó£ºÎÆÀí¿â¡¢Mesh¿â µÈ
+        // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½â¡¢Meshï¿½ï¿½ ï¿½ï¿½
 
     public:
         AllocatedBuffer upload_buffer_async(size_t bufferSize, const void* data, VkBufferUsageFlags usage);
         uint64_t submit_async_uploads();
         AllocatedImage upload_image_async(int width, int height, VkFormat format, const void* pixels, size_t pixelSize);
+        UploadStats get_upload_stats() const;
 
     private:
-        //»·ÐÎÔÝ´æÇø¿Õ¼ä·ÖÅäÆ÷
+        //ï¿½ï¿½ï¿½ï¿½ï¿½Ý´ï¿½ï¿½ï¿½ï¿½Õ¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
         size_t allocate_staging_space(size_t size);
-        void update_staging_tail(); // »ØÊÕ GPU ÒÑ¶ÁÈ¡µÄ¿Õ¼ä
+        void update_staging_tail(); // ï¿½ï¿½ï¿½ï¿½ GPU ï¿½Ñ¶ï¿½È¡ï¿½Ä¿Õ¼ï¿½
 
         std::mutex _stagingMutex;
         std::deque<StagingTask> _stagingTasks;
         size_t _stagingUsedSpace{ 0 };
+        size_t _pendingUploadBytes{ 0 };
+        UploadStats _uploadStats;
     };
     
 }

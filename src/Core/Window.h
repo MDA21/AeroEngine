@@ -27,6 +27,8 @@ namespace Aero {
         uint32_t width() const { return _width; }
         uint32_t height() const { return _height; }
         void get_framebuffer_size(int* w, int* h) const;
+        bool was_resized() const { return _framebufferResized; }
+        void reset_resize_flag() { _framebufferResized = false; }
 
         bool is_key_down(int key) const;
         bool is_mouse_button_down(int button) const;
@@ -34,7 +36,7 @@ namespace Aero {
         glm::vec2 get_mouse_delta() const { return _mouseDelta; }
         void set_cursor_mode(bool locked);
 
-        // ±©Â¶¾ä±ú¹© RHI ºÍ ImGui Ê¹ÓÃ
+        // ï¿½ï¿½Â¶ï¿½ï¿½ï¿½ï¿½ï¿½ RHI ï¿½ï¿½ ImGui Ê¹ï¿½ï¿½
         GLFWwindow* handle() const { return _window; }
 
     private:
@@ -49,6 +51,7 @@ namespace Aero {
         glm::vec2 _lastMousePos{ 0.0f };
         glm::vec2 _mouseDelta{ 0.0f };
         bool _firstMouse{ true };
+        bool _framebufferResized{ false };
     };
 
 }

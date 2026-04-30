@@ -12,14 +12,18 @@ namespace Aero {
 			VkCommandBuffer mainCommandBuffer;
 			VkSemaphore swapchainSemaphore;
 			VkFence renderFence;
+			VkQueryPool timestampQueryPool{ VK_NULL_HANDLE };
+			bool hasValidTimestamps{ false };
 		};
+
+		inline constexpr uint32_t GPU_TIMESTAMP_QUERY_COUNT = 3;
 
 		struct AsyncUploadContext {
 			VkCommandPool commandPool;
 			VkCommandBuffer commandBuffer;
-			VkSemaphore timelineSemaphore; // Vulkan 1.2+ Ê±¼äÏßÐÅºÅÁ¿£¬´úÌæ Fence
-			uint64_t uploadValue{ 0 };     // ÓÎ±ê£º¼ÇÂ¼µ±Ç°ÒÑÌá½»µÄµÝÔöÖµ
-			std::mutex uploadMutex;        // »¤º½£ºÎ´À´ÔÚ¶àÏß³ÌÂ¼ÖÆÖ¸ÁîÊ±·ÀÊý¾Ý¾ºÕù
+			VkSemaphore timelineSemaphore; // Vulkan 1.2+ Ê±ï¿½ï¿½ï¿½ï¿½ï¿½Åºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Fence
+			uint64_t uploadValue{ 0 };     // ï¿½Î±ê£ºï¿½ï¿½Â¼ï¿½ï¿½Ç°ï¿½ï¿½ï¿½á½»ï¿½Äµï¿½ï¿½ï¿½Öµ
+			std::mutex uploadMutex;        // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î´ï¿½ï¿½ï¿½Ú¶ï¿½ï¿½ß³ï¿½Â¼ï¿½ï¿½Ö¸ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½Ý¾ï¿½ï¿½ï¿½
 		};
 
 		struct StagingRingBuffer
@@ -46,11 +50,13 @@ namespace Aero {
 			VkQueue get_graphics_queue() const { return _graphicsQueue; }
 			uint32_t get_graphics_queue_family() const { return _graphicsQueueFamily; }
 			VkQueue get_transfer_queue() const { return _transferQueue; }
+			float get_timestamp_period_ns() const { return _timestampPeriodNs; }
 
 			VkSwapchainKHR get_swapchain() const { return _swapchain; }
 			VkFormat get_swapchain_format() const { return _swapchainImageFormat; }
 			const std::vector<VkImage>& get_swapchain_images() const { return _swapchainImages; }
 			const std::vector<VkImageView>& get_swapchain_image_views() const { return _swapchainImageViews; }
+			void recreate_swapchain(Aero::Window* window);
 
 			FrameData& get_current_frame();
 			uint32_t get_frame_index() const { return _frameNumber % FRAME_OVERLAP; }
@@ -71,6 +77,7 @@ namespace Aero {
 		private:
 			void init_vulkan(Aero::Window* window);
 			void init_swapchain(Aero::Window* window);
+			void cleanup_swapchain();
 			void init_allocator();
 			void init_commands();
 			void init_sync_structures();
@@ -88,6 +95,7 @@ namespace Aero {
 			uint32_t _graphicsQueueFamily{ 0 };
 			VkQueue _transferQueue{ VK_NULL_HANDLE };
 			uint32_t _transferQueueFamily{ 0 };
+			float _timestampPeriodNs{ 1.0f };
 
 			VkSwapchainKHR _swapchain{ VK_NULL_HANDLE };
 			VkFormat _swapchainImageFormat;

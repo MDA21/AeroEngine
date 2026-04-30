@@ -19,17 +19,17 @@ namespace Aero {
         static std::array<glm::vec4, 6> get_frustum_planes(const glm::mat4& viewProj) {
             std::array<glm::vec4, 6> planes;
 
-            // glm ÊÇÁÐÖ÷Ðò£¬ÎªÁËÌ×ÓÃ±ê×¼ÐÐÖ÷ÐòÌáÈ¡¹«Ê½£¬ÎÒÃÇÏÈÇó×ªÖÃ
+            // glm ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Îªï¿½ï¿½ï¿½ï¿½ï¿½Ã±ï¿½×¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È¡ï¿½ï¿½Ê½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×ªï¿½ï¿½
             glm::mat4 M = glm::transpose(viewProj);
 
             planes[0] = M[3] + M[0]; // Left
             planes[1] = M[3] - M[0]; // Right
             planes[2] = M[3] + M[1]; // Bottom
             planes[3] = M[3] - M[1]; // Top
-            planes[4] = M[2];        // Near (ÔÚ Reverse-Z ºÍ Vulkan ZO ÏÂÒÀÈ»ÊÊÓÃ)
+            planes[4] = M[2];        // Near (ï¿½ï¿½ Reverse-Z ï¿½ï¿½ Vulkan ZO ï¿½ï¿½ï¿½ï¿½È»ï¿½ï¿½ï¿½ï¿½)
             planes[5] = M[3] - M[2]; // Far
 
-            //¹éÒ»»¯Æ½Ãæ·¨Ïß£¬ÕâÑù plane.w µÄÎïÀíÒâÒå¾ÍÊÇµãµ½Ô­µãµÄ¾àÀë
+            //ï¿½ï¿½Ò»ï¿½ï¿½Æ½ï¿½æ·¨ï¿½ß£ï¿½ï¿½ï¿½ï¿½ï¿½ plane.w ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Çµãµ½Ô­ï¿½ï¿½Ä¾ï¿½ï¿½ï¿½
             for (auto& p : planes) {
                 float length = glm::length(glm::vec3(p.x, p.y, p.z));
                 p /= length;
@@ -40,7 +40,7 @@ namespace Aero {
         void SceneRenderer::init(Aero::RHI::VulkanDevice* device, uint32_t windowWidth, uint32_t windowHeight) {
             _renderDevice = device;
 
-            // Ä¬ÈÏ²ÉÑùÆ÷
+            // Ä¬ï¿½Ï²ï¿½ï¿½ï¿½ï¿½ï¿½
             VkSamplerCreateInfo samplerInfo = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
             samplerInfo.magFilter = VK_FILTER_LINEAR;
             samplerInfo.minFilter = VK_FILTER_LINEAR;
@@ -58,16 +58,22 @@ namespace Aero {
         }
 
         void SceneRenderer::cleanup() {
+            destroy_depth_image();
             _deletionQueue.flush();
         }
 
-        void SceneRenderer::draw(VkCommandBuffer cmd, VkImageView targetImageView, const Camera& camera, uint32_t screenWidth, uint32_t screenHeight, bool useGPUDriven) {
+        void SceneRenderer::recreate_render_targets(uint32_t width, uint32_t height) {
+            destroy_depth_image();
+            init_depth_image(width, height);
+        }
+
+        void SceneRenderer::draw(VkCommandBuffer cmd, VkImageView targetImageView, const Camera& camera, uint32_t screenWidth, uint32_t screenHeight, bool useGPUDriven, VkQueryPool timestampQueryPool) {
             glm::mat4 view = camera.GetViewMatrix();
             glm::mat4 proj = glm::perspectiveZO(glm::radians(camera.Fov), (float)screenWidth / (float)screenHeight, 10000.0f, 0.1f);
             proj[1][1] *= -1;
             glm::mat4 viewProj = proj * view;
 
-            // ================= ½×¶Î 1£ºCompute Culling =================
+            // ================= ï¿½×¶ï¿½ 1ï¿½ï¿½Compute Culling =================
             if (_instanceCount > 0 && useGPUDriven) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _cullingPipeline);
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _cullingPipelineLayout, 0, 1, &_globalDescriptorSet, 0, nullptr);
@@ -91,7 +97,11 @@ namespace Aero {
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 0, nullptr, 1, &indirectBarrier, 0, nullptr);
             }
 
-            // ================= ½×¶Î 2£ºGraphics Rendering =================
+            if (timestampQueryPool != VK_NULL_HANDLE) {
+                vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, timestampQueryPool, 1);
+            }
+
+            // ================= ï¿½×¶ï¿½ 2ï¿½ï¿½Graphics Rendering =================
             VkClearValue clearValue;
             clearValue.color = { {0.05f, 0.05f, 0.08f, 1.0f} };
             VkExtent2D currentExtent = { screenWidth, screenHeight };
@@ -148,7 +158,7 @@ namespace Aero {
             pushConstant.size = sizeof(glm::mat4);
             pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-            //´´½¨ Pipeline Layout
+            //ï¿½ï¿½ï¿½ï¿½ Pipeline Layout
             VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
             pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
             pipelineLayoutInfo.setLayoutCount = 1;
@@ -158,11 +168,11 @@ namespace Aero {
 
             VK_CHECK(vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &_trianglePipelineLayout));
 
-            //ÅäÖÃ Pipeline Builder
+            //ï¿½ï¿½ï¿½ï¿½ Pipeline Builder
             PipelineBuilder builder;
             builder._pipelineLayout = _trianglePipelineLayout;
 
-            //¶¥µã×ÅÉ«Æ÷½×¶Î
+            //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É«ï¿½ï¿½ï¿½×¶ï¿½
             VkPipelineShaderStageCreateInfo vertStage{};
             vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -170,7 +180,7 @@ namespace Aero {
             vertStage.pName = "main";
             builder._shaderStages.push_back(vertStage);
 
-            //Æ¬¶Î×ÅÉ«Æ÷½×¶Î
+            //Æ¬ï¿½ï¿½ï¿½ï¿½É«ï¿½ï¿½ï¿½×¶ï¿½
             VkPipelineShaderStageCreateInfo fragStage{};
             fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -313,12 +323,20 @@ namespace Aero {
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
                 });
 
-            _deletionQueue.push_function([=]() {
-                vkDestroyImageView(_renderDevice->get_device(), _depthImage.view, nullptr);
-                vmaDestroyImage(allocator, _depthImage.image, _depthImage.allocation);
-                });
-
             std::cout << "[AeroEngine] Depth Image allocated successfully." << std::endl;
+        }
+
+        void SceneRenderer::destroy_depth_image() {
+            if (_depthImage.view != VK_NULL_HANDLE) {
+                vkDestroyImageView(_renderDevice->get_device(), _depthImage.view, nullptr);
+                _depthImage.view = VK_NULL_HANDLE;
+            }
+
+            if (_depthImage.image != VK_NULL_HANDLE) {
+                vmaDestroyImage(_renderDevice->get_allocator(), _depthImage.image, _depthImage.allocation);
+                _depthImage.image = VK_NULL_HANDLE;
+                _depthImage.allocation = VK_NULL_HANDLE;
+            }
         }
 
         void Aero::Renderer::SceneRenderer::init_bindless_descriptor() {
@@ -441,7 +459,7 @@ namespace Aero {
             indirectWrite.descriptorCount = 1;
             indirectWrite.pBufferInfo = &indirectBufferInfo;
 
-            // ÐÞ¸Ä£ºÌá½» 3 ¸öÐ´Èë²Ù×÷
+            // ï¿½Þ¸Ä£ï¿½ï¿½á½» 3 ï¿½ï¿½Ð´ï¿½ï¿½ï¿½ï¿½ï¿½
             VkWriteDescriptorSet writes[] = { matWrite, instWrite, indirectWrite };
             vkUpdateDescriptorSets(_renderDevice->get_device(), 3, writes, 0, nullptr);
         }
@@ -455,8 +473,8 @@ namespace Aero {
             VkWriteDescriptorSet textureWrite{};
             textureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             textureWrite.dstSet = _globalDescriptorSet;
-            textureWrite.dstBinding = 1; // °óÔÚ Binding 1 (globalTextures)
-            textureWrite.dstArrayElement = textureID; // ¹Ø¼ü£¡²åµ½Êý×éµÄÄÄ¸öË÷Òý
+            textureWrite.dstBinding = 1; // ï¿½ï¿½ï¿½ï¿½ Binding 1 (globalTextures)
+            textureWrite.dstArrayElement = textureID; // ï¿½Ø¼ï¿½ï¿½ï¿½ï¿½åµ½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä¸ï¿½ï¿½ï¿½ï¿½ï¿½
             textureWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             textureWrite.descriptorCount = 1;
             textureWrite.pImageInfo = &imageBufferInfo;
@@ -468,6 +486,13 @@ namespace Aero {
             auto& assetManager = Aero::Resource::AssetManager::Get();
 
             std::cout << "[SceneRenderer] Start async packing & uploading scene..." << std::endl;
+
+            _sceneStats.meshCount = scene.meshCount;
+            _sceneStats.submeshCount = static_cast<uint32_t>(scene.subMeshes.size());
+            _sceneStats.materialCount = static_cast<uint32_t>(scene.materials.size());
+            _sceneStats.textureCount = static_cast<uint32_t>(scene.images.size());
+            _sceneStats.vertexCount = static_cast<uint32_t>(scene.vertices.size());
+            _sceneStats.indexCount = static_cast<uint32_t>(scene.indices.size());
 
             size_t vertexBufferSize = scene.vertices.size() * sizeof(Vertex);
             _mainMeshBuffers.vertexBuffer = assetManager.upload_buffer_async(
@@ -493,7 +518,7 @@ namespace Aero {
 
                 _sceneTextures.push_back(tex);
 
-                //°ÑÉÏ´«ºÃµÄÎÆÀíµ±³¡²å½ø Bindless ÃèÊö·û²ÛÎ»
+                //ï¿½ï¿½ï¿½Ï´ï¿½ï¿½Ãµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Bindless ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î»
                 update_bindless_texture(tex, i);
             }
 
@@ -532,37 +557,37 @@ namespace Aero {
                 for (uint32_t i = 0; i < _instanceCount; i++) {
                     const SubMesh& sm = scene.subMeshes[i];
                     VkDrawIndexedIndirectCommand cmd{};
-                    cmd.indexCount = sm.indexCount;     // Õâ¸öÍø¸ñÓÐ¶àÉÙ¸ö¶¥µãË÷Òý
-                    cmd.instanceCount = 1;                 // Ä¬ÈÏ»­1¸ö£¨ComputeShader ÌÞ³ýÊ±»á¸Ä³É0£©
-                    cmd.firstIndex = sm.firstIndex;     // Ë÷ÒýÆ«ÒÆ
-                    cmd.vertexOffset = sm.vertexOffset;   // ¶¥µãÆ«ÒÆ
-                    cmd.firstInstance = i;                 // Shader ÖÐµÄ gl_InstanceIndex (¶ÔÓ¦ InstanceData Êý×é)
+                    cmd.indexCount = sm.indexCount;     // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð¶ï¿½ï¿½Ù¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+                    cmd.instanceCount = 1;                 // Ä¬ï¿½Ï»ï¿½1ï¿½ï¿½ï¿½ï¿½ComputeShader ï¿½Þ³ï¿½Ê±ï¿½ï¿½Ä³ï¿½0ï¿½ï¿½
+                    cmd.firstIndex = sm.firstIndex;     // ï¿½ï¿½ï¿½ï¿½Æ«ï¿½ï¿½
+                    cmd.vertexOffset = sm.vertexOffset;   // ï¿½ï¿½ï¿½ï¿½Æ«ï¿½ï¿½
+                    cmd.firstInstance = i;                 // Shader ï¿½Ðµï¿½ gl_InstanceIndex (ï¿½ï¿½Ó¦ InstanceData ï¿½ï¿½ï¿½ï¿½)
 
                     indirectCommands.push_back(cmd);
                 }
 
                 size_t indirectBufferSize = _instanceCount * sizeof(VkDrawIndexedIndirectCommand);
 
-                // ×¢ÒâÓÃ·¨£º×÷Îª SSBO ¹© Compute Ð´Èë£¬Í¬Ê±×÷Îª Indirect »º³å¹© Draw ¶ÁÈ¡
+                // ×¢ï¿½ï¿½ï¿½Ã·ï¿½ï¿½ï¿½ï¿½ï¿½Îª SSBO ï¿½ï¿½ Compute Ð´ï¿½ë£¬Í¬Ê±ï¿½ï¿½Îª Indirect ï¿½ï¿½ï¿½å¹© Draw ï¿½ï¿½È¡
                 _drawIndirectBuffer = assetManager.upload_buffer_async(
                     indirectBufferSize, indirectCommands.data(),
                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
             }
 
-            // --- 5. ¸üÐÂÈ«¾Ö Bindless ÃèÊö·û¼¯ ---
-            // ×¢Òâ£ºÕâÀï _sceneTextures µÈÏÖÔÚÒÑ¾­ÊÇ°üº¬ÕæÊµ¾ä±úµÄ AllocatedImage ÁË
-            // ËüÃÇµÄÊý¾ÝÕýÔÚºóÌ¨±»°áÔË£¬µ«²»·Á°­ÎÒÃÇÔÚ CPU ²àÏÈ°Ñ Descriptor Set °óºÃ
+            // --- 5. ï¿½ï¿½ï¿½ï¿½È«ï¿½ï¿½ Bindless ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ---
+            // ×¢ï¿½â£ºï¿½ï¿½ï¿½ï¿½ _sceneTextures ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñ¾ï¿½ï¿½Ç°ï¿½ï¿½ï¿½ï¿½ï¿½Êµï¿½ï¿½ï¿½ï¿½ï¿½ AllocatedImage ï¿½ï¿½
+            // ï¿½ï¿½ï¿½Çµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Úºï¿½Ì¨ï¿½ï¿½ï¿½ï¿½ï¿½Ë£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ CPU ï¿½ï¿½ï¿½È°ï¿½ Descriptor Set ï¿½ï¿½ï¿½
             update_global_descriptor_set();
 
             _deletionQueue.push_function([=, this]() {
                 VmaAllocator allocator = _renderDevice->get_allocator();
                 VkDevice device = _renderDevice->get_device();
 
-                // Ïú»ÙÍø¸ñ Buffer
+                // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Buffer
                 vmaDestroyBuffer(allocator, _mainMeshBuffers.vertexBuffer.buffer, _mainMeshBuffers.vertexBuffer.allocation);
                 vmaDestroyBuffer(allocator, _mainMeshBuffers.indexBuffer.buffer, _mainMeshBuffers.indexBuffer.allocation);
 
-                // Ïú»Ù SSBO Óë Indirect Buffer
+                // ï¿½ï¿½ï¿½ï¿½ SSBO ï¿½ï¿½ Indirect Buffer
                 if (_materialBuffer.buffer != VK_NULL_HANDLE) {
                     vmaDestroyBuffer(allocator, _materialBuffer.buffer, _materialBuffer.allocation);
                 }
@@ -573,7 +598,7 @@ namespace Aero {
                     vmaDestroyBuffer(allocator, _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
                 }
 
-                // Ïú»ÙËùÓÐÎÆÀí
+                // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 for (auto& tex : _sceneTextures) {
                     vkDestroyImageView(device, tex.view, nullptr);
                     vmaDestroyImage(allocator, tex.image, tex.allocation);

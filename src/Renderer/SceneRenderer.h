@@ -1,23 +1,35 @@
 #pragma once
 #include "Core/camera.h"
 #include "RHI/VulkanDevice.h"
-#include "RHI/vk_types.h";
+#include "RHI/vk_types.h"
 
 namespace Aero {
 	namespace Renderer {
+		struct SceneStats {
+			uint32_t meshCount{ 0 };
+			uint32_t submeshCount{ 0 };
+			uint32_t materialCount{ 0 };
+			uint32_t textureCount{ 0 };
+			uint32_t vertexCount{ 0 };
+			uint32_t indexCount{ 0 };
+		};
+
 		class SceneRenderer {
 		public:
 			void init(Aero::RHI::VulkanDevice* device, uint32_t windowWidth, uint32_t windowHeight);
 			void cleanup();
+			void recreate_render_targets(uint32_t width, uint32_t height);
 
 			void upload_scene(const SceneData& scene);
+			const SceneStats& get_scene_stats() const { return _sceneStats; }
 
-			void draw(VkCommandBuffer cmd, VkImageView targetImageView, const Camera& camera, uint32_t screenWidth, uint32_t screenHeight, bool useGPUDriven);
+			void draw(VkCommandBuffer cmd, VkImageView targetImageView, const Camera& camera, uint32_t screenWidth, uint32_t screenHeight, bool useGPUDriven, VkQueryPool timestampQueryPool = VK_NULL_HANDLE);
 
 		private:
 			void init_pipelines();
 			void init_bindless_descriptor();
 			void init_depth_image(uint32_t width, uint32_t height);
+			void destroy_depth_image();
 			void update_global_descriptor_set();
 
 			void update_bindless_texture(const AllocatedImage& image, uint32_t textureID);
@@ -26,7 +38,7 @@ namespace Aero {
 			Aero::RHI::VulkanDevice* _renderDevice{ nullptr };
 			DeletionQueue _deletionQueue;
 
-			// --- ¹ÜÏßÓëÃèÊö·û×´Ì¬ ---
+			// --- ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×´Ì¬ ---
 			VkPipelineLayout _trianglePipelineLayout;
 			VkPipeline _trianglePipeline;
 			VkPipelineLayout _cullingPipelineLayout;
@@ -36,12 +48,12 @@ namespace Aero {
 			VkDescriptorSetLayout _globalSetLayout;
 			VkDescriptorSet _globalDescriptorSet;
 
-			// --- äÖÈ¾Ä¿±ê ---
+			// --- ï¿½ï¿½È¾Ä¿ï¿½ï¿½ ---
 			AllocatedImage _depthImage;
 			VkFormat _depthImageFormat{ VK_FORMAT_D32_SFLOAT };
 			VkSampler _defaultSamplerLinear;
 
-			// --- ³¡¾° GPU Êý¾Ý (Î´À´¹éÊô AssetManager) ---
+			// --- ï¿½ï¿½ï¿½ï¿½ GPU ï¿½ï¿½ï¿½ï¿½ (Î´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ AssetManager) ---
 			GPUMeshBuffers _mainMeshBuffers;
 			AllocatedBuffer _materialBuffer;
 			AllocatedBuffer _instanceBuffer;
@@ -49,6 +61,7 @@ namespace Aero {
 			std::vector<AllocatedImage> _sceneTextures;
 			std::vector<SubMesh> _renderables;
 			uint32_t _instanceCount{ 0 };
+			SceneStats _sceneStats;
 		};
 	}
 }
