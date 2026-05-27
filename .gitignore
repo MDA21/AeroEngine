@@ -2,3 +2,6 @@ build/
 .vs/
 out/
 assets/
+.claude/
+.idea/
+CLAUDE.md

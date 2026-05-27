@@ -4,6 +4,7 @@
 #include "RHI/VulkanDevice.h"
 #include "RHI/vk_types.h"
 #include "Renderer/SceneRenderer.h"
+#include <string>
 
 struct GLFWwindow;
 
@@ -21,6 +22,7 @@ private:
 	void recreate_swapchain();
 	void create_render_semaphores();
 	void destroy_render_semaphores();
+	void process_reload_requests();
 
 	void init_imgui();
 
@@ -54,6 +56,10 @@ private:
 	Camera _camera{ glm::vec3(0.0f, 1.0f, 5.0f) };
 	PerformanceStats _perfStats;
 	PerformanceStats _displayPerfStats;
+	std::string _currentScenePath;
+	std::string _reloadStatus{ "Ready" };
+	bool _pendingSceneReload{ false };
+	bool _pendingShaderReload{ false };
 
 
 };

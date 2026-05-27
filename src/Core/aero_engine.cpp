@@ -3,6 +3,8 @@
 #include <optional>
 #include <array>
 #include <chrono>
+#include <filesystem>
+#include <Windows.h>
 #include "RHI//vk_initializers.h"
 #include "Core/KeyCodes.h"
 #include "Resource/asset_manager.h"
@@ -12,12 +14,21 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 
+namespace {
+	std::filesystem::path get_executable_directory() {
+		char modulePath[MAX_PATH] = {};
+		DWORD pathLength = GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
+		return std::filesystem::path(std::string(modulePath, pathLength)).parent_path();
+	}
+}
+
 AeroEngine& AeroEngine::Get() {
 	static AeroEngine engine;
 	return engine;
 }
 
 void AeroEngine::init() {
+	std::filesystem::current_path(get_executable_directory());
 
 	_window = std::make_unique<Aero::Window>(Aero::Window::Specs{ 1280, 720, "AeroEngine v0.1" });
 
@@ -37,34 +48,48 @@ void AeroEngine::init() {
 
 	init_imgui();
 
-	std::string modelPath = "F:/VSproject/AeroEngine/assets/Sponza/glTF/Sponza.gltf";
-	//std::string modelPath = "F:/VSproject/AeroEngine/assets/Bistro/BistroExterior.gltf";
-	std::optional<SceneData> sceneOpt = GLTFLoader::load_gltf(modelPath);
+	_currentScenePath = "F:/VSproject/AeroEngine/assets/Sponza/glTF/Sponza.gltf";
+	//_currentScenePath = "F:/VSproject/AeroEngine/assets/Bistro/BistroExterior.gltf";
+	std::optional<SceneData> sceneOpt = GLTFLoader::load_gltf(_currentScenePath);
 	if (sceneOpt.has_value()) {
-		_sceneRenderer->upload_scene(sceneOpt.value());
-
-		auto& assetManager = Aero::Resource::AssetManager::Get();
-		uint64_t targetTimelineValue = assetManager.submit_async_uploads();
-
-		std::cout << "[AeroEngine] Scene data pushed to Ring Buffer. Waiting for GPU Transfer..." << std::endl;
-
-		VkSemaphoreWaitInfo waitInfo{ .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
-		waitInfo.semaphoreCount = 1;
-		VkSemaphore timelineSem = _renderDevice->get_async_upload_context().timelineSemaphore;
-		waitInfo.pSemaphores = &timelineSem;
-		waitInfo.pValues = &targetTimelineValue;
-
-		VK_CHECK(vkWaitSemaphores(_renderDevice->get_device(), &waitInfo, UINT64_MAX));
-
-		std::cout << "[AeroEngine] GPU Transfer complete. Ready to render!" << std::endl;
+		_sceneRenderer->submit_scene(sceneOpt.value(), &_reloadStatus);
 	}
 	else {
 		std::cerr << "[AeroEngine] CRITICAL: Failed to load startup scene!" << std::endl;
+		_reloadStatus = "Failed to load startup scene";
 	}
 
 	_isInitialized = true;
 	
 	std::cout << "[AeroEngine] Initialization complete." << std::endl;
+}
+
+void AeroEngine::process_reload_requests() {
+	if (!_pendingSceneReload && !_pendingShaderReload) {
+		return;
+	}
+
+	std::optional<SceneData> sceneOpt = GLTFLoader::load_gltf(_currentScenePath);
+	if (!sceneOpt.has_value()) {
+		_reloadStatus = "Scene reload failed";
+		_pendingShaderReload = false;
+		_pendingSceneReload = false;
+		return;
+	}
+
+	if (_pendingShaderReload) {
+		_reloadStatus = _sceneRenderer->reload_shaders_and_scene(sceneOpt.value(), _window->width(), _window->height(), &_reloadStatus)
+			? "Shaders reloaded"
+			: _reloadStatus;
+	}
+	else if (_pendingSceneReload) {
+		_reloadStatus = _sceneRenderer->reload_scene(sceneOpt.value(), _window->width(), _window->height(), &_reloadStatus)
+			? "Scene reloaded"
+			: _reloadStatus;
+	}
+
+	_pendingShaderReload = false;
+	_pendingSceneReload = false;
 }
 
 void AeroEngine::create_render_semaphores() {
@@ -212,6 +237,7 @@ void AeroEngine::draw() {
 
 	auto& currentFrame = _renderDevice->get_current_frame();
 	VK_CHECK(vkWaitForFences(_renderDevice->get_device(), 1, &currentFrame.renderFence, true, 1000000000));
+	process_reload_requests();
 
 	if (currentFrame.hasValidTimestamps) {
 		std::array<uint64_t, Aero::RHI::GPU_TIMESTAMP_QUERY_COUNT> gpuTimestamps{};
@@ -283,6 +309,17 @@ void AeroEngine::draw() {
 	ImGui::Separator();
 
 	ImGui::Text("VSync: %s", (_renderDevice->get_swapchain_format() == VK_PRESENT_MODE_FIFO_KHR) ? "ON (FIFO)" : "OFF (MAILBOX)");
+	ImGui::Separator();
+
+	ImGui::Text("Reload");
+	if (ImGui::Button("Reload Scene")) {
+		_pendingSceneReload = true;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Reload Shaders")) {
+		_pendingShaderReload = true;
+	}
+	ImGui::Text("Status: %s", _reloadStatus.c_str());
 	ImGui::Separator();
 
 	ImGui::Text("Pipeline Architecture");

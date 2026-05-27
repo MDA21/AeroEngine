@@ -2,6 +2,7 @@
 #include "Core/camera.h"
 #include "RHI/VulkanDevice.h"
 #include "RHI/vk_types.h"
+#include <string>
 
 namespace Aero {
 	namespace Renderer {
@@ -21,6 +22,9 @@ namespace Aero {
 			void recreate_render_targets(uint32_t width, uint32_t height);
 
 			void upload_scene(const SceneData& scene);
+			bool submit_scene(const SceneData& scene, std::string* statusMessage = nullptr);
+			bool reload_scene(const SceneData& scene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage = nullptr);
+			bool reload_shaders_and_scene(const SceneData& scene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage = nullptr);
 			const SceneStats& get_scene_stats() const { return _sceneStats; }
 
 			void draw(VkCommandBuffer cmd, VkImageView targetImageView, const Camera& camera, uint32_t screenWidth, uint32_t screenHeight, bool useGPUDriven, VkQueryPool timestampQueryPool = VK_NULL_HANDLE);

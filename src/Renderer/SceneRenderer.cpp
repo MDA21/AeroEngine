@@ -4,6 +4,9 @@
 #include <stb_image.h>
 #include <iostream>
 #include <array>
+#include <filesystem>
+#include <cstdlib>
+#include <Windows.h>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include "Resource/asset_manager.h"
@@ -37,6 +40,47 @@ namespace Aero {
             return planes;
         }
 
+        static std::filesystem::path get_executable_directory() {
+            char modulePath[MAX_PATH] = {};
+            DWORD pathLength = GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
+            return std::filesystem::path(std::string(modulePath, pathLength)).parent_path();
+        }
+
+        static bool recompile_shader_binaries(std::string* statusMessage) {
+            const std::filesystem::path exeDir = get_executable_directory();
+            const std::filesystem::path sourceDir = exeDir.parent_path().parent_path() / "shaders";
+            const std::filesystem::path outputDir = exeDir / "shaders";
+            std::filesystem::create_directories(outputDir);
+
+            std::string glslcCommand = "glslc";
+            if (const char* vulkanSdk = std::getenv("VULKAN_SDK")) {
+                std::filesystem::path glslcPath = std::filesystem::path(vulkanSdk) / "Bin" / "glslc.exe";
+                if (std::filesystem::exists(glslcPath)) {
+                    glslcCommand = "\"" + glslcPath.string() + "\"";
+                }
+            }
+
+            const std::array<std::string, 3> shaderNames = { "mesh.vert", "mesh.frag", "culling.comp" };
+            for (const std::string& shaderName : shaderNames) {
+                const std::filesystem::path sourcePath = sourceDir / shaderName;
+                const std::filesystem::path outputPath = outputDir / (shaderName + ".spv");
+                const std::string command = glslcCommand + " \"" + sourcePath.string() + "\" -o \"" + outputPath.string() + "\"";
+
+                std::cout << "[Reload] source: " << sourcePath << std::endl;
+                std::cout << "[Reload] output: " << outputPath << std::endl;
+                std::cout << "[Reload] command: " << command << std::endl;
+
+                if (std::system(command.c_str()) != 0) {
+                    if (statusMessage) {
+                        *statusMessage = "Shader compile failed: " + shaderName;
+                    }
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         void SceneRenderer::init(Aero::RHI::VulkanDevice* device, uint32_t windowWidth, uint32_t windowHeight) {
             _renderDevice = device;
 
@@ -60,6 +104,44 @@ namespace Aero {
         void SceneRenderer::cleanup() {
             destroy_depth_image();
             _deletionQueue.flush();
+        }
+
+        bool SceneRenderer::submit_scene(const SceneData& scene, std::string* statusMessage) {
+            upload_scene(scene);
+
+            auto& assetManager = Aero::Resource::AssetManager::Get();
+            uint64_t targetTimelineValue = assetManager.submit_async_uploads();
+
+            std::cout << "[SceneRenderer] Scene data pushed to Ring Buffer. Waiting for GPU Transfer..." << std::endl;
+
+            VkSemaphoreWaitInfo waitInfo{ .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+            waitInfo.semaphoreCount = 1;
+            VkSemaphore timelineSem = _renderDevice->get_async_upload_context().timelineSemaphore;
+            waitInfo.pSemaphores = &timelineSem;
+            waitInfo.pValues = &targetTimelineValue;
+
+            VK_CHECK(vkWaitSemaphores(_renderDevice->get_device(), &waitInfo, UINT64_MAX));
+
+            std::cout << "[SceneRenderer] GPU Transfer complete. Ready to render!" << std::endl;
+            if (statusMessage) {
+                *statusMessage = "Ready";
+            }
+            return true;
+        }
+
+        bool SceneRenderer::reload_scene(const SceneData& scene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage) {
+            VK_CHECK(vkDeviceWaitIdle(_renderDevice->get_device()));
+            cleanup();
+            init(_renderDevice, windowWidth, windowHeight);
+            return submit_scene(scene, statusMessage);
+        }
+
+        bool SceneRenderer::reload_shaders_and_scene(const SceneData& scene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage) {
+            if (!recompile_shader_binaries(statusMessage)) {
+                return false;
+            }
+
+            return reload_scene(scene, windowWidth, windowHeight, statusMessage);
         }
 
         void SceneRenderer::recreate_render_targets(uint32_t width, uint32_t height) {
