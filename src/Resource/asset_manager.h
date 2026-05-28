@@ -1,5 +1,5 @@
 #pragma once
-#include "RHI/vk_types.h";
+#include "RHI/vk_types.h"
 #include "RHI/VulkanDevice.h"
 #include <unordered_map>
 #include <string>
@@ -30,11 +30,19 @@ namespace Aero::Resource {
         void init(Aero::RHI::VulkanDevice* device);
         void cleanup();
 
-        // δ������Ϊ�������첽��Ŀǰ�ȴͬ��ע����ļ���
-        bool load_scene_sync(const std::string& name, const std::string& filePath);
+        // 全流程场景加载：解析 glTF → 上传 GPU → 缓存到注册表
+        bool load_scene(const std::string& name, const std::string& filePath);
 
-        // ��ȡ��Դ (���� SceneRenderer ͨ����Щ�ӿ�������)
-        std::optional<SceneData> get_scene(const std::string& name);
+        // 获取已加载场景的 GPU 资源句柄（非持有指针，nullptr 表示未找到）
+        GpuScene* get_scene(const std::string& name);
+
+        // 卸载场景：销毁所有关联的 Vulkan 资源并从注册表移除
+        void unload_scene(const std::string& name);
+
+        // 将 CPU 端 SceneData 上传为 GPU 端 GpuScene
+        // 只上传场景数据（顶点/索引/材质/纹理），不处理 Instance/Indirect
+        // 注意：此方法只记录上传命令，不提交——调用方负责 submit_async_uploads()
+        std::optional<GpuScene> upload_scene(const SceneData& scene);
 
     private:
         AssetManager() = default;
@@ -46,9 +54,7 @@ namespace Aero::Resource {
 
         // ��Դע��� (������������Ϊδ����̨�̻߳�����д)
         std::mutex _assetMutex;
-        std::unordered_map<std::string, SceneData> _loadedScenes;
-
-        // �������ӣ������⡢Mesh�� ��
+        std::unordered_map<std::string, GpuScene> _loadedScenes;
 
     public:
         AllocatedBuffer upload_buffer_async(size_t bufferSize, const void* data, VkBufferUsageFlags usage);

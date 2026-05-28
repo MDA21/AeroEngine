@@ -6,14 +6,6 @@
 
 namespace Aero {
 	namespace Renderer {
-		struct SceneStats {
-			uint32_t meshCount{ 0 };
-			uint32_t submeshCount{ 0 };
-			uint32_t materialCount{ 0 };
-			uint32_t textureCount{ 0 };
-			uint32_t vertexCount{ 0 };
-			uint32_t indexCount{ 0 };
-		};
 
 		class SceneRenderer {
 		public:

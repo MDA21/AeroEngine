@@ -17,7 +17,7 @@ namespace Aero::Resource {
     }
 
     void AssetManager::cleanup() {
-        std::scoped_lock multiLock(_assetMutex, _stagingMutex);
+        std::scoped_lock multiLock(_stagingMutex);
 
         // 1. 销毁遗留的 Command Buffer 弹匣
         for (auto& task : _stagingTasks) {
@@ -30,33 +30,96 @@ namespace Aero::Resource {
         _stagingTasks.clear();
 
         // 2. 清理资源注册表
-        _loadedScenes.clear();
+        std::vector<std::string> keys;
+        {
+            std::lock_guard<std::mutex> lock(_assetMutex);
+            for (auto& [name, _] : _loadedScenes) keys.push_back(name);
+        }
+        for (auto& name : keys) unload_scene(name);
+
         std::cout << "[AssetManager] Cleaned up." << std::endl;
     }
 
-    bool AssetManager::load_scene_sync(const std::string& name, const std::string& filePath) {
+    bool AssetManager::load_scene(const std::string& name, const std::string& filePath) {
         std::optional<SceneData> sceneOpt = GLTFLoader::load_gltf(filePath);
-        if (!sceneOpt.has_value()) {
-            std::cerr << "[AssetManager] Failed to load scene: " << filePath << std::endl;
+        if (!sceneOpt) {
+            std::cerr << "[AssetManager] load scene from "<<filePath<<" failed" << std::endl;
             return false;
         }
-
+        std::optional<GpuScene> gpuScene = upload_scene(sceneOpt.value());
+        if (!gpuScene) {
+            std::cerr << "[AssetManager] upload scene to gpu failed" << std::endl;
+            return false;
+        }
         std::lock_guard<std::mutex> lock(_assetMutex);
-        _loadedScenes[name] = std::move(sceneOpt.value());
+        _loadedScenes[name] = std::move(gpuScene.value());
 
-        // 这里只是解析了数据，还没有上传到 GPU
-        // 下一步我们要把上传逻辑从 SceneRenderer 搬过来
+        submit_async_uploads();
 
         return true;
     }
 
-    std::optional<SceneData> AssetManager::get_scene(const std::string& name) {
+    GpuScene* AssetManager::get_scene(const std::string& name) {
         std::lock_guard<std::mutex> lock(_assetMutex);
         auto it = _loadedScenes.find(name);
-        if (it != _loadedScenes.end()) {
-            return it->second;
+        return (it != _loadedScenes.end()) ? &it->second : nullptr;
+    }
+
+    void AssetManager::unload_scene(const std::string& name) {
+        std::lock_guard<std::mutex> lock(_assetMutex);
+        auto it = _loadedScenes.find(name);
+        if (it == _loadedScenes.end()) { std::cout << "[AssetManager] Scene " << name << " is not loaded." << std::endl; return; }
+        GpuScene& scene = it->second;
+        vmaDestroyBuffer(_device->get_allocator(), scene.meshBuffers.vertexBuffer.buffer, scene.meshBuffers.vertexBuffer.allocation);
+        vmaDestroyBuffer(_device->get_allocator(), scene.meshBuffers.indexBuffer.buffer, scene.meshBuffers.indexBuffer.allocation);
+        if (scene.materialBuffer.buffer) {
+            vmaDestroyBuffer(_device->get_allocator(), scene.materialBuffer.buffer, scene.materialBuffer.allocation);
         }
-        return std::nullopt;
+        for (size_t i = 0; i < scene.stats.textureCount; ++i) {
+            vkDestroyImageView(_device->get_device(), scene.textures[i].view, nullptr);
+            vmaDestroyImage(_device->get_allocator(), scene.textures[i].image, scene.textures[i].allocation);
+        }
+        _loadedScenes.erase(it);
+    }
+
+    std::optional<GpuScene> AssetManager::upload_scene(const SceneData& scene) {
+        if (scene.vertices.empty()) return std::nullopt;
+
+        SceneStats stats;
+        GpuScene gpuScene;
+
+        stats.meshCount = scene.meshCount;
+        stats.submeshCount = static_cast<uint32_t>(scene.subMeshes.size());
+        stats.materialCount = static_cast<uint32_t>(scene.materials.size());
+        stats.textureCount = static_cast<uint32_t>(scene.images.size());
+        stats.vertexCount = static_cast<uint32_t>(scene.vertices.size());
+        stats.indexCount = static_cast<uint32_t>(scene.indices.size());
+
+        gpuScene.stats = stats;
+
+        size_t vertexBufferSize = stats.vertexCount * sizeof(Vertex);
+        gpuScene.meshBuffers.vertexBuffer = upload_buffer_async(vertexBufferSize, scene.vertices.data(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
+        size_t indexBufferSize = stats.indexCount * sizeof(uint32_t);
+        gpuScene.meshBuffers.indexBuffer = upload_buffer_async(indexBufferSize, scene.indices.data(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+        size_t materialBufferSize = stats.materialCount * sizeof(MaterialParams);
+        if (materialBufferSize) {
+            gpuScene.materialBuffer = upload_buffer_async(materialBufferSize, scene.materials.data(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        }
+        
+        for (uint32_t i = 0; i < stats.textureCount; ++i) {
+            const auto& img = scene.images[i];
+            size_t pixelSize = img.width * img.height * 4;
+
+            AllocatedImage tex = upload_image_async(img.width, img.height, VK_FORMAT_R8G8B8A8_UNORM, img.pixels, pixelSize);
+            gpuScene.textures.push_back(tex);
+        }
+        
+        gpuScene.subMeshes = scene.subMeshes;
+        gpuScene.materials = scene.materials;
+
+        return gpuScene;
     }
 
     UploadStats AssetManager::get_upload_stats() const {

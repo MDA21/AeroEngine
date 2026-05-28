@@ -145,6 +145,47 @@ struct GPUMeshBuffers
 	AllocatedBuffer indexBuffer;
 };
 
+// ============================================================
+// SceneStats: 场景统计信息，供调试面板展示
+// 从 SceneRenderer.h 迁移到此处，成为项目共享类型
+// ============================================================
+struct SceneStats {
+	uint32_t meshCount{ 0 };
+	uint32_t submeshCount{ 0 };
+	uint32_t materialCount{ 0 };
+	uint32_t textureCount{ 0 };
+	uint32_t vertexCount{ 0 };
+	uint32_t indexCount{ 0 };
+};
+
+// ============================================================
+// GpuScene: AssetManager 上传完成后返回的 GPU 资源句柄集
+//
+// 设计原则：
+// - 只包含"场景数据"本身的 GPU 资源（顶点/索引/材质/纹理）
+// - Instance/Indirect buffer 不属于这里 —— 它们是渲染器根据 subMeshes
+//   动态生成的，是"渲染策略"而非"场景数据"
+// - subMeshes 和 materials 是 CPU 端的元数据副本，渲染器生成
+//   InstanceData 时需要读 AABB、材质索引等信息
+//
+// 生命周期：
+// - 由 AssetManager 创建和销毁（通过 upload_scene / unload_scene）
+// - SceneRenderer 通过 const* 借用，不持有所有权
+// ============================================================
+struct GpuScene {
+	GPUMeshBuffers meshBuffers;                // 顶点 + 索引 buffer
+	AllocatedBuffer materialBuffer;            // MaterialParams SSBO
+	std::vector<AllocatedImage> textures;      // 纹理数组（image + view）
+	std::vector<SubMesh> subMeshes;            // CPU 端元数据（AABB、索引范围等）
+	std::vector<MaterialParams> materials;     // CPU 端材质参数
+	SceneStats stats;                          // 统计信息
+
+	// 至少顶点 buffer 创建成功即视为有效场景
+	bool valid() const {
+		return meshBuffers.vertexBuffer.buffer != VK_NULL_HANDLE;
+	}
+};
+
 //for gpu driven instanse data
 struct InstanceData
 {
