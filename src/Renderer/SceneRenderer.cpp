@@ -102,46 +102,45 @@ namespace Aero {
         }
 
         void SceneRenderer::cleanup() {
+            if (_instanceBuffer.buffer != VK_NULL_HANDLE) {
+                vmaDestroyBuffer(_renderDevice->get_allocator(), _instanceBuffer.buffer, _instanceBuffer.allocation);
+                _instanceBuffer.buffer = VK_NULL_HANDLE;
+            }
+            if (_drawIndirectBuffer.buffer != VK_NULL_HANDLE) {
+                vmaDestroyBuffer(_renderDevice->get_allocator(), _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
+                _drawIndirectBuffer.buffer = VK_NULL_HANDLE;
+            }
             destroy_depth_image();
             _deletionQueue.flush();
         }
 
-        bool SceneRenderer::submit_scene(const SceneData& scene, std::string* statusMessage) {
-            upload_scene(scene);
-
-            auto& assetManager = Aero::Resource::AssetManager::Get();
-            uint64_t targetTimelineValue = assetManager.submit_async_uploads();
-
-            std::cout << "[SceneRenderer] Scene data pushed to Ring Buffer. Waiting for GPU Transfer..." << std::endl;
-
-            VkSemaphoreWaitInfo waitInfo{ .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
-            waitInfo.semaphoreCount = 1;
-            VkSemaphore timelineSem = _renderDevice->get_async_upload_context().timelineSemaphore;
-            waitInfo.pSemaphores = &timelineSem;
-            waitInfo.pValues = &targetTimelineValue;
-
-            VK_CHECK(vkWaitSemaphores(_renderDevice->get_device(), &waitInfo, UINT64_MAX));
-
-            std::cout << "[SceneRenderer] GPU Transfer complete. Ready to render!" << std::endl;
-            if (statusMessage) {
-                *statusMessage = "Ready";
+        bool SceneRenderer::submit_scene(const GpuScene& gpuScene, std::string* statusMessage) {
+            bind_scene(gpuScene);
+            if (_drawIndirectBuffer.buffer == VK_NULL_HANDLE || _instanceBuffer.buffer == VK_NULL_HANDLE) {
+                if (statusMessage) *statusMessage = "Failed to create GPU buffers for the scene.";
+                return false;
             }
+            if (statusMessage) *statusMessage = "Scene submitted successfully.";
             return true;
         }
 
-        bool SceneRenderer::reload_scene(const SceneData& scene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage) {
+
+        bool SceneRenderer::reload_scene(const GpuScene& gpuScene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage) {
             VK_CHECK(vkDeviceWaitIdle(_renderDevice->get_device()));
             cleanup();
             init(_renderDevice, windowWidth, windowHeight);
-            return submit_scene(scene, statusMessage);
+            return submit_scene(gpuScene, statusMessage);
         }
 
-        bool SceneRenderer::reload_shaders_and_scene(const SceneData& scene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage) {
+        bool SceneRenderer::reload_shaders_and_scene_dry_run(std::string* statusMessage) {
+            return recompile_shader_binaries(statusMessage);
+        }
+
+        bool SceneRenderer::reload_shaders_and_scene(const GpuScene& gpuScene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage) {
             if (!recompile_shader_binaries(statusMessage)) {
                 return false;
             }
-
-            return reload_scene(scene, windowWidth, windowHeight, statusMessage);
+            return reload_scene(gpuScene, windowWidth, windowHeight, statusMessage);
         }
 
         void SceneRenderer::recreate_render_targets(uint32_t width, uint32_t height) {
@@ -155,7 +154,7 @@ namespace Aero {
             proj[1][1] *= -1;
             glm::mat4 viewProj = proj * view;
 
-            // ================= �׶� 1��Compute Culling =================
+            // ================= GPU Compute Culling =================
             if (_instanceCount > 0 && useGPUDriven) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _cullingPipeline);
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _cullingPipelineLayout, 0, 1, &_globalDescriptorSet, 0, nullptr);
@@ -183,7 +182,7 @@ namespace Aero {
                 vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, timestampQueryPool, 1);
             }
 
-            // ================= �׶� 2��Graphics Rendering =================
+            // ================= Graphics Rendering =================
             VkClearValue clearValue;
             clearValue.color = { {0.05f, 0.05f, 0.08f, 1.0f} };
             VkExtent2D currentExtent = { screenWidth, screenHeight };
@@ -201,11 +200,11 @@ namespace Aero {
 
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _trianglePipeline);
 
-            if (_instanceCount > 0 && _mainMeshBuffers.vertexBuffer.buffer != VK_NULL_HANDLE) {
+                if (_instanceCount > 0 && _currentScene && _currentScene->meshBuffers.vertexBuffer.buffer != VK_NULL_HANDLE) {
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _trianglePipelineLayout, 0, 1, &_globalDescriptorSet, 0, nullptr);
                 VkDeviceSize offset = 0;
-                vkCmdBindVertexBuffers(cmd, 0, 1, &_mainMeshBuffers.vertexBuffer.buffer, &offset);
-                vkCmdBindIndexBuffer(cmd, _mainMeshBuffers.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdBindVertexBuffers(cmd, 0, 1, &_currentScene->meshBuffers.vertexBuffer.buffer, &offset);
+                vkCmdBindIndexBuffer(cmd, _currentScene->meshBuffers.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
                 vkCmdPushConstants(cmd, _trianglePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(glm::mat4), &viewProj);
 
@@ -214,12 +213,17 @@ namespace Aero {
                 }
                 else {
                     for (uint32_t i = 0; i < _instanceCount; i++) {
-                        const SubMesh& submesh = _renderables[i % _renderables.size()];
+                        const SubMesh& submesh = _currentScene->subMeshes[i % _currentScene->subMeshes.size()];
                         vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.firstIndex, submesh.vertexOffset, i);
                     }
                 }
             }
             vkCmdEndRendering(cmd);
+        }
+
+        const SceneStats& SceneRenderer::get_scene_stats() const {
+            static SceneStats emptyStats;
+            return _currentScene ? _currentScene->stats : emptyStats;
         }
 
         void Aero::Renderer::SceneRenderer::init_pipelines() {
@@ -501,7 +505,7 @@ namespace Aero {
         void Aero::Renderer::SceneRenderer::update_global_descriptor_set() {
 
             VkDescriptorBufferInfo matBufferInfo{};
-            matBufferInfo.buffer = _materialBuffer.buffer;
+            matBufferInfo.buffer = _currentScene ? _currentScene->materialBuffer.buffer : VK_NULL_HANDLE;
             matBufferInfo.offset = 0;
             matBufferInfo.range = VK_WHOLE_SIZE;
 
@@ -541,7 +545,6 @@ namespace Aero {
             indirectWrite.descriptorCount = 1;
             indirectWrite.pBufferInfo = &indirectBufferInfo;
 
-            // �޸ģ��ύ 3 ��д�����
             VkWriteDescriptorSet writes[] = { matWrite, instWrite, indirectWrite };
             vkUpdateDescriptorSets(_renderDevice->get_device(), 3, writes, 0, nullptr);
         }
@@ -564,131 +567,76 @@ namespace Aero {
             vkUpdateDescriptorSets(_renderDevice->get_device(), 1, &textureWrite, 0, nullptr);
         }
 
-        void SceneRenderer::upload_scene(const SceneData& scene) {
+                void SceneRenderer::bind_scene(const GpuScene& gpuScene) {
+            if (_instanceBuffer.buffer) {
+                vmaDestroyBuffer(_renderDevice->get_allocator(), _instanceBuffer.buffer, _instanceBuffer.allocation);
+                _instanceBuffer.buffer = VK_NULL_HANDLE;
+            }
+            if (_drawIndirectBuffer.buffer) {
+                vmaDestroyBuffer(_renderDevice->get_allocator(), _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
+                _drawIndirectBuffer.buffer = VK_NULL_HANDLE;
+            }
+
             auto& assetManager = Aero::Resource::AssetManager::Get();
 
-            std::cout << "[SceneRenderer] Start async packing & uploading scene..." << std::endl;
-
-            _sceneStats.meshCount = scene.meshCount;
-            _sceneStats.submeshCount = static_cast<uint32_t>(scene.subMeshes.size());
-            _sceneStats.materialCount = static_cast<uint32_t>(scene.materials.size());
-            _sceneStats.textureCount = static_cast<uint32_t>(scene.images.size());
-            _sceneStats.vertexCount = static_cast<uint32_t>(scene.vertices.size());
-            _sceneStats.indexCount = static_cast<uint32_t>(scene.indices.size());
-
-            size_t vertexBufferSize = scene.vertices.size() * sizeof(Vertex);
-            _mainMeshBuffers.vertexBuffer = assetManager.upload_buffer_async(
-                vertexBufferSize, scene.vertices.data(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-
-            size_t indexBufferSize = scene.indices.size() * sizeof(uint32_t);
-            _mainMeshBuffers.indexBuffer = assetManager.upload_buffer_async(
-                indexBufferSize, scene.indices.data(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-
-            size_t materialBufferSize = scene.materials.size() * sizeof(MaterialParams);
-            if (materialBufferSize > 0) {
-                _materialBuffer = assetManager.upload_buffer_async(
-                    materialBufferSize, scene.materials.data(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-            }
-
-            _sceneTextures.clear();
-            for (uint32_t i = 0; i < scene.images.size(); i++) {
-                const auto& img = scene.images[i];
-                size_t pixelSize = img.width * img.height * 4;
-
-                AllocatedImage tex = assetManager.upload_image_async(
-                    img.width, img.height, VK_FORMAT_R8G8B8A8_UNORM, img.pixels, pixelSize);
-
-                _sceneTextures.push_back(tex);
-
-                //���ϴ��õ������������ Bindless ��������λ
-                update_bindless_texture(tex, i);
-            }
-
-            _renderables = scene.subMeshes;
-            _instanceCount = static_cast<uint32_t>(scene.subMeshes.size());
+            const std::vector<SubMesh>& renderables = gpuScene.subMeshes;
+            _instanceCount = static_cast<uint32_t>(renderables.size());
+            if (_instanceCount == 0) return;
 
             std::vector<InstanceData> instances;
             instances.reserve(_instanceCount);
-
-            for (uint32_t i = 0; i < _instanceCount; i++) {
-                const SubMesh& sm = scene.subMeshes[i];
+            for (size_t i = 0; i < _instanceCount; ++i) {
+                const SubMesh& sm = renderables[i];
                 InstanceData inst{};
-
                 inst.modelMatrix = glm::mat4(1.0f);
-
                 float matIDAsFloat;
                 memcpy(&matIDAsFloat, &sm.materialIndex, sizeof(float));
-
                 inst.aabbMin_MatID = glm::vec4(sm.aabbMin, matIDAsFloat);
                 inst.aabbMax_Pad = glm::vec4(sm.aabbMax, 0.0f);
                 inst.indexCount = sm.indexCount;
                 inst.firstIndex = sm.firstIndex;
                 inst.vertexOffset = sm.vertexOffset;
-
                 instances.push_back(inst);
             }
 
-            if (!_renderables.empty()) {
-                size_t instanceBufferSize = instances.size() * sizeof(InstanceData);
-                _instanceBuffer = assetManager.upload_buffer_async(
-                    instanceBufferSize, instances.data(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-
-                std::vector<VkDrawIndexedIndirectCommand> indirectCommands;
-                indirectCommands.reserve(_instanceCount);
-
-                for (uint32_t i = 0; i < _instanceCount; i++) {
-                    const SubMesh& sm = scene.subMeshes[i];
-                    VkDrawIndexedIndirectCommand cmd{};
-                    cmd.indexCount = sm.indexCount;     // ��������ж��ٸ���������
-                    cmd.instanceCount = 1;                 // Ĭ�ϻ�1����ComputeShader �޳�ʱ��ĳ�0��
-                    cmd.firstIndex = sm.firstIndex;     // ����ƫ��
-                    cmd.vertexOffset = sm.vertexOffset;   // ����ƫ��
-                    cmd.firstInstance = i;                 // Shader �е� gl_InstanceIndex (��Ӧ InstanceData ����)
-
-                    indirectCommands.push_back(cmd);
-                }
-
-                size_t indirectBufferSize = _instanceCount * sizeof(VkDrawIndexedIndirectCommand);
-
-                // ע���÷�����Ϊ SSBO �� Compute д�룬ͬʱ��Ϊ Indirect ���幩 Draw ��ȡ
-                _drawIndirectBuffer = assetManager.upload_buffer_async(
-                    indirectBufferSize, indirectCommands.data(),
-                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            std::vector<VkDrawIndexedIndirectCommand> indirectCommands;
+            indirectCommands.reserve(_instanceCount);
+            for (uint32_t i = 0; i < _instanceCount; i++) {
+                const SubMesh& sm = renderables[i];
+                VkDrawIndexedIndirectCommand cmd{};
+                cmd.indexCount = sm.indexCount;
+                cmd.instanceCount = 1;
+                cmd.firstIndex = sm.firstIndex;
+                cmd.vertexOffset = sm.vertexOffset;
+                cmd.firstInstance = i;
+                indirectCommands.push_back(cmd);
             }
 
-            // --- 5. ����ȫ�� Bindless �������� ---
-            // ע�⣺���� _sceneTextures �������Ѿ��ǰ�����ʵ����� AllocatedImage ��
-            // ���ǵ��������ں�̨�����ˣ��������������� CPU ���Ȱ� Descriptor Set ���
+            _instanceBuffer = assetManager.upload_buffer_async(
+                instances.size() * sizeof(InstanceData), instances.data(),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            _drawIndirectBuffer = assetManager.upload_buffer_async(
+                indirectCommands.size() * sizeof(VkDrawIndexedIndirectCommand), indirectCommands.data(),
+                VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+            uint64_t uploadTimelineValue = assetManager.submit_async_uploads();
+
+            VkSemaphoreWaitInfo waitInfo{ .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+            waitInfo.semaphoreCount = 1;
+            VkSemaphore timelineSem = _renderDevice->get_async_upload_context().timelineSemaphore;
+            waitInfo.pSemaphores = &timelineSem;
+            waitInfo.pValues = &uploadTimelineValue;
+            VK_CHECK(vkWaitSemaphores(_renderDevice->get_device(), &waitInfo, UINT64_MAX));
+
+            for (uint32_t i = 0; i < gpuScene.textures.size(); ++i) {
+                update_bindless_texture(gpuScene.textures[i], i);
+            }
+
+            _currentScene = &gpuScene;
             update_global_descriptor_set();
-
-            _deletionQueue.push_function([=, this]() {
-                VmaAllocator allocator = _renderDevice->get_allocator();
-                VkDevice device = _renderDevice->get_device();
-
-                // �������� Buffer
-                vmaDestroyBuffer(allocator, _mainMeshBuffers.vertexBuffer.buffer, _mainMeshBuffers.vertexBuffer.allocation);
-                vmaDestroyBuffer(allocator, _mainMeshBuffers.indexBuffer.buffer, _mainMeshBuffers.indexBuffer.allocation);
-
-                // ���� SSBO �� Indirect Buffer
-                if (_materialBuffer.buffer != VK_NULL_HANDLE) {
-                    vmaDestroyBuffer(allocator, _materialBuffer.buffer, _materialBuffer.allocation);
-                }
-                if (_instanceBuffer.buffer != VK_NULL_HANDLE) {
-                    vmaDestroyBuffer(allocator, _instanceBuffer.buffer, _instanceBuffer.allocation);
-                }
-                if (_drawIndirectBuffer.buffer != VK_NULL_HANDLE) {
-                    vmaDestroyBuffer(allocator, _drawIndirectBuffer.buffer, _drawIndirectBuffer.allocation);
-                }
-
-                // ������������
-                for (auto& tex : _sceneTextures) {
-                    vkDestroyImageView(device, tex.view, nullptr);
-                    vmaDestroyImage(allocator, tex.image, tex.allocation);
-                }
-                });
-
-            std::cout << "[SceneRenderer] Scene data queued for transfer successfully." << std::endl;
         }
+
+
 
     } // namespace Renderer
 } // namespace Aero

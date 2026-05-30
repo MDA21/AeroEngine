@@ -50,9 +50,16 @@ void AeroEngine::init() {
 
 	_currentScenePath = "F:/VSproject/AeroEngine/assets/Sponza/glTF/Sponza.gltf";
 	//_currentScenePath = "F:/VSproject/AeroEngine/assets/Bistro/BistroExterior.gltf";
-	std::optional<SceneData> sceneOpt = GLTFLoader::load_gltf(_currentScenePath);
-	if (sceneOpt.has_value()) {
-		_sceneRenderer->submit_scene(sceneOpt.value(), &_reloadStatus);
+	auto& am = Aero::Resource::AssetManager::Get();
+	if (am.load_scene("main", _currentScenePath)) {
+		GpuScene* gpuScene = am.get_scene("main");
+		if (gpuScene) {
+			_sceneRenderer->submit_scene(*gpuScene, &_reloadStatus);
+		}
+		else {
+			std::cerr << "[AeroEngine] CRITICAL: get_scene returned null!" << std::endl;
+			_reloadStatus = "Failed to get GPU scene";
+		}
 	}
 	else {
 		std::cerr << "[AeroEngine] CRITICAL: Failed to load startup scene!" << std::endl;
@@ -69,21 +76,41 @@ void AeroEngine::process_reload_requests() {
 		return;
 	}
 
-	std::optional<SceneData> sceneOpt = GLTFLoader::load_gltf(_currentScenePath);
-	if (!sceneOpt.has_value()) {
+	// Shader 重载：先编译再拆场景，避免编译失败后 _currentScene 悬空
+	if (_pendingShaderReload) {
+		if (!_sceneRenderer->reload_shaders_and_scene_dry_run(&_reloadStatus)) {
+			// 编译失败，保持旧场景不动
+			_pendingShaderReload = false;
+			return;
+		}
+	}
+
+	auto& am = Aero::Resource::AssetManager::Get();
+	vkDeviceWaitIdle(_renderDevice->get_device());
+	am.unload_scene("main");
+
+	if (!am.load_scene("main", _currentScenePath)) {
 		_reloadStatus = "Scene reload failed";
 		_pendingShaderReload = false;
 		_pendingSceneReload = false;
 		return;
 	}
 
+	GpuScene* gpuScene = am.get_scene("main");
+	if (!gpuScene) {
+		_reloadStatus = "Scene reload failed - no GPU scene";
+		_pendingShaderReload = false;
+		_pendingSceneReload = false;
+		return;
+	}
+
 	if (_pendingShaderReload) {
-		_reloadStatus = _sceneRenderer->reload_shaders_and_scene(sceneOpt.value(), _window->width(), _window->height(), &_reloadStatus)
+		_reloadStatus = _sceneRenderer->reload_shaders_and_scene(*gpuScene, _window->width(), _window->height(), &_reloadStatus)
 			? "Shaders reloaded"
 			: _reloadStatus;
 	}
 	else if (_pendingSceneReload) {
-		_reloadStatus = _sceneRenderer->reload_scene(sceneOpt.value(), _window->width(), _window->height(), &_reloadStatus)
+		_reloadStatus = _sceneRenderer->reload_scene(*gpuScene, _window->width(), _window->height(), &_reloadStatus)
 			? "Scene reloaded"
 			: _reloadStatus;
 	}

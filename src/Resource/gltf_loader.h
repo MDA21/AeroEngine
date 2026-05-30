@@ -1,5 +1,5 @@
 #pragma once
-#include "RHI/vk_types.h";
+#include "RHI/vk_types.h"
 #include <string>
 #include <optional>
 

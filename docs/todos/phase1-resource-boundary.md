@@ -7,7 +7,7 @@
 
 - 开始日期：2026-05-27
 - 整体状态：🔄 DOING
-- 第一批、第二批已完成（AssetManager 核心方法全部实现）
+- 第一、二、三批已完成（AssetManager + SceneRenderer 职责收窄）
 
 ---
 
@@ -30,9 +30,9 @@
 
 | # | 文件 | 任务 | 难度 | 状态 |
 |---|------|------|------|------|
-| 6 | `SceneRenderer.h` | 新增 `bind_scene(const GpuScene&)` 声明 | ⭐⭐ | ⬜ TODO |
-| 7 | `SceneRenderer.cpp` | 实现 `bind_scene()` — 生成 InstanceData + Indirect + 更新描述符 | ⭐⭐⭐ | ⬜ TODO |
-| 8 | `SceneRenderer.h/.cpp` | 成员变量变更 — 移除旧 GPU 资源成员，新增 `_currentScene` 指针 | ⭐⭐ | ⬜ TODO |
+| 6 | `SceneRenderer.h` | 新增 `bind_scene(const GpuScene&)` 声明 | ⭐⭐ | ✅ DONE |
+| 7 | `SceneRenderer.cpp` | 实现 `bind_scene()` — 生成 InstanceData + Indirect + 更新描述符 | ⭐⭐⭐ | ✅ DONE |
+| 8 | `SceneRenderer.h/.cpp` | 成员变量变更 — 移除旧 GPU 资源成员，新增 `_currentScene` 指针 | ⭐⭐ | ✅ DONE |
 
 ## 第四批（上层连接 + 热重载适配）
 
