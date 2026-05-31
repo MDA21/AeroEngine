@@ -45,6 +45,9 @@
 
 ## 3. 阶段划分
 
+> 📋 架构设计参考：[AI-Native 引擎设计方针](ai-native-engine-vision.md)
+> — RenderContext、语义层、AI 组件矩阵、共创模式。2026-05-31 讨论总结。
+
 - 阶段 1：渲染引擎可投递版本
 - 阶段 2：工具层与命令系统
 - 阶段 3：AI Tool Use v1

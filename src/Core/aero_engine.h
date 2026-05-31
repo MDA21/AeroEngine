@@ -8,7 +8,6 @@
 
 struct GLFWwindow;
 
-
 class AeroEngine {
 public:
 	static AeroEngine& Get();
@@ -29,18 +28,18 @@ private:
 	void process_input();
 
 	struct PerformanceStats {
-		float displayMs{ 0.0f };
-		float displayFps{ 0.0f };
-		float cpuFrameMs{ 0.0f };
-		float gpuFrameMs{ 0.0f };
-		float cullingGpuMs{ 0.0f };
-		float uploadCpuMs{ 0.0f };
-		uint64_t uploadBytes{ 0 };
+		float displayMs{0.0f};
+		float displayFps{0.0f};
+		float cpuFrameMs{0.0f};
+		float gpuFrameMs{0.0f};
+		float cullingGpuMs{0.0f};
+		float uploadCpuMs{0.0f};
+		uint64_t uploadBytes{0};
 	};
 	static_assert(sizeof(PerformanceStats) == 32, "PerformanceStats should stay compact");
 
-	bool _isInitialized{ false };
-	bool _useGPUDriven{ true };
+	bool _isInitialized{false};
+	bool _useGPUDriven{true};
 
 	std::unique_ptr<Aero::Window> _window;
 	std::unique_ptr<Aero::RHI::VulkanDevice> _renderDevice;
@@ -49,17 +48,15 @@ private:
 	DeletionQueue _mainDeletionQueue;
 
 	std::vector<VkSemaphore> _renderSemaphores;
-	
+
 	//imgui
 	VkDescriptorPool _imguiPool;
 
-	Camera _camera{ glm::vec3(0.0f, 1.0f, 5.0f) };
+	Camera _camera{glm::vec3(0.0f, 1.0f, 5.0f)};
 	PerformanceStats _perfStats;
 	PerformanceStats _displayPerfStats;
 	std::string _currentScenePath;
-	std::string _reloadStatus{ "Ready" };
-	bool _pendingSceneReload{ false };
-	bool _pendingShaderReload{ false };
-
-
+	std::string _reloadStatus{"Ready"};
+	bool _pendingSceneReload{false};
+	bool _pendingShaderReload{false};
 };

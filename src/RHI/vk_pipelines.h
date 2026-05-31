@@ -4,26 +4,28 @@
 #include <vector>
 
 namespace vkutil {
-    bool load_shader_module(const char* filePath, VkDevice device, VkShaderModule* outShaderModule);
+	bool load_shader_module(const char* filePath, VkDevice device, VkShaderModule* outShaderModule);
 }
 
 class PipelineBuilder {
 public:
-    std::vector<VkPipelineShaderStageCreateInfo> _shaderStages;
-    VkPipelineInputAssemblyStateCreateInfo _inputAssembly;
-    VkPipelineRasterizationStateCreateInfo _rasterizer;
-    VkPipelineColorBlendAttachmentState _colorBlendAttachment;
-    VkPipelineMultisampleStateCreateInfo _multisampling;
-    VkPipelineLayout _pipelineLayout;
-    VkPipelineDepthStencilStateCreateInfo _depthStencil;
-    VkPipelineRenderingCreateInfo _renderInfo;
-    VkFormat _colorAttachmentFormat;
-    VkPipelineVertexInputStateCreateInfo _vertexInputInfo;
+	std::vector<VkPipelineShaderStageCreateInfo> _shaderStages;
+	VkPipelineInputAssemblyStateCreateInfo _inputAssembly;
+	VkPipelineRasterizationStateCreateInfo _rasterizer;
+	VkPipelineColorBlendAttachmentState _colorBlendAttachment;
+	VkPipelineMultisampleStateCreateInfo _multisampling;
+	VkPipelineLayout _pipelineLayout;
+	VkPipelineDepthStencilStateCreateInfo _depthStencil;
+	VkPipelineRenderingCreateInfo _renderInfo;
+	VkFormat _colorAttachmentFormat;
+	VkPipelineVertexInputStateCreateInfo _vertexInputInfo;
 
-    PipelineBuilder() { clear(); }
+	PipelineBuilder() {
+		clear();
+	}
 
-    void clear();
+	void clear();
 
-    // 核心构建函数
-    VkPipeline build_pipeline(VkDevice device);
+	// 核心构建函数
+	VkPipeline build_pipeline(VkDevice device);
 };

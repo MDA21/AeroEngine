@@ -3,11 +3,9 @@
 #include <string>
 #include <optional>
 
-class GLTFLoader
-{
+class GLTFLoader {
 public:
 	static std::optional<SceneData> load_gltf(const std::string& filePath);
 
 private:
-
 };

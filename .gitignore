@@ -4,4 +4,8 @@ out/
 assets/
 .claude/
 .idea/
+.vscode/
+.cache/
+.editorconfig
+.clang-format-*
 CLAUDE.md

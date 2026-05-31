@@ -37,7 +37,7 @@ namespace Aero {
 			void update_bindless_texture(const AllocatedImage& image, uint32_t textureID);
 
 		private:
-			Aero::RHI::VulkanDevice* _renderDevice{ nullptr };
+			Aero::RHI::VulkanDevice* _renderDevice{nullptr};
 			DeletionQueue _deletionQueue;
 
 			// --- 管线状态 ---
@@ -52,16 +52,16 @@ namespace Aero {
 
 			// --- 渲染目标 ---
 			AllocatedImage _depthImage;
-			VkFormat _depthImageFormat{ VK_FORMAT_D32_SFLOAT };
+			VkFormat _depthImageFormat{VK_FORMAT_D32_SFLOAT};
 			VkSampler _defaultSamplerLinear;
 
 			// --- 渲染器私有的 GPU 资源（Instance/Indirect 由渲染器生成，不归 AssetManager） ---
 			AllocatedBuffer _instanceBuffer;
 			AllocatedBuffer _drawIndirectBuffer;
-			uint32_t _instanceCount{ 0 };
+			uint32_t _instanceCount{0};
 
 			// 当前绑定的场景（非持有指针，由 AssetManager 持有并负责销毁）
-			const GpuScene* _currentScene{ nullptr };
+			const GpuScene* _currentScene{nullptr};
 		};
-	}
-}
+	} // namespace Renderer
+} // namespace Aero

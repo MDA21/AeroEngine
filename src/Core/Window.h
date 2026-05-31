@@ -7,51 +7,65 @@ struct GLFWwindow;
 
 namespace Aero {
 
-    class Window {
-    public:
-        struct Specs {
-            uint32_t width{ 1280 };
-            uint32_t height{ 720 };
-            std::string title{ "AeroEngine" };
-        };
+	class Window {
+	public:
+		struct Specs {
+			uint32_t width{1280};
+			uint32_t height{720};
+			std::string title{"AeroEngine"};
+		};
 
-        Window(const Specs& specs);
-        ~Window();
+		Window(const Specs& specs);
+		~Window();
 
-        bool should_close() const;
-        void poll_events();
+		bool should_close() const;
+		void poll_events();
 
-        float get_delta_time() const { return _deltaTime; }
-        float get_current_time() const;
+		float get_delta_time() const {
+			return _deltaTime;
+		}
+		float get_current_time() const;
 
-        uint32_t width() const { return _width; }
-        uint32_t height() const { return _height; }
-        void get_framebuffer_size(int* w, int* h) const;
-        bool was_resized() const { return _framebufferResized; }
-        void reset_resize_flag() { _framebufferResized = false; }
+		uint32_t width() const {
+			return _width;
+		}
+		uint32_t height() const {
+			return _height;
+		}
+		void get_framebuffer_size(int* w, int* h) const;
+		bool was_resized() const {
+			return _framebufferResized;
+		}
+		void reset_resize_flag() {
+			_framebufferResized = false;
+		}
 
-        bool is_key_down(int key) const;
-        bool is_mouse_button_down(int button) const;
-        glm::vec2 get_mouse_pos() const;
-        glm::vec2 get_mouse_delta() const { return _mouseDelta; }
-        void set_cursor_mode(bool locked);
+		bool is_key_down(int key) const;
+		bool is_mouse_button_down(int button) const;
+		glm::vec2 get_mouse_pos() const;
+		glm::vec2 get_mouse_delta() const {
+			return _mouseDelta;
+		}
+		void set_cursor_mode(bool locked);
 
-        // ��¶����� RHI �� ImGui ʹ��
-        GLFWwindow* handle() const { return _window; }
+		// ��¶����� RHI �� ImGui ʹ��
+		GLFWwindow* handle() const {
+			return _window;
+		}
 
-    private:
-        static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
+	private:
+		static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 
-        GLFWwindow* _window{ nullptr };
-        uint32_t _width, _height;
+		GLFWwindow* _window{nullptr};
+		uint32_t _width, _height;
 
-        float _lastFrameTime{ 0.0f };
-        float _deltaTime{ 0.0f };
+		float _lastFrameTime{0.0f};
+		float _deltaTime{0.0f};
 
-        glm::vec2 _lastMousePos{ 0.0f };
-        glm::vec2 _mouseDelta{ 0.0f };
-        bool _firstMouse{ true };
-        bool _framebufferResized{ false };
-    };
+		glm::vec2 _lastMousePos{0.0f};
+		glm::vec2 _mouseDelta{0.0f};
+		bool _firstMouse{true};
+		bool _framebufferResized{false};
+	};
 
-}
+} // namespace Aero

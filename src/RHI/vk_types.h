@@ -10,8 +10,7 @@
 
 constexpr unsigned int FRAME_OVERLAP = 2;
 
-struct DeletionQueue
-{
+struct DeletionQueue {
 	std::deque<std::function<void()>> deletors;
 	void push_function(std::function<void()>&& function) {
 		deletors.push_back(function);
@@ -24,6 +23,7 @@ struct DeletionQueue
 	}
 };
 
+// clang-format off
 #define VK_CHECK(x)                                                 \
     do {                                                            \
         VkResult err = x;                                           \
@@ -32,9 +32,9 @@ struct DeletionQueue
             abort();                                                \
         }                                                           \
     } while (0)
+// clang-format on
 
-struct Vertex
-{
+struct Vertex {
 	glm::vec3 position;
 	float uv_x;
 	glm::vec3 normal;
@@ -86,8 +86,7 @@ struct Vertex
 	}
 };
 
-struct MaterialParams
-{
+struct MaterialParams {
 	glm::vec4 baseColorFactor;
 	glm::vec4 pbrFactors;
 
@@ -97,8 +96,7 @@ struct MaterialParams
 	int32_t emissiveTexIdx;
 };
 
-struct SubMesh
-{
+struct SubMesh {
 	uint32_t firstIndex;
 	uint32_t indexCount;
 	uint32_t vertexOffset;
@@ -109,15 +107,14 @@ struct SubMesh
 };
 
 struct LoadedImage {
-	unsigned char* pixels{ nullptr };
-	int width{ 0 };
-	int height{ 0 };
-	int channels{ 0 };
+	unsigned char* pixels{nullptr};
+	int width{0};
+	int height{0};
+	int channels{0};
 };
 
-struct SceneData
-{
-	uint32_t meshCount{ 0 };
+struct SceneData {
+	uint32_t meshCount{0};
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
 	std::vector<SubMesh> subMeshes;
@@ -125,8 +122,7 @@ struct SceneData
 	std::vector<LoadedImage> images;
 };
 
-struct AllocatedBuffer
-{
+struct AllocatedBuffer {
 	VkBuffer buffer;
 	VmaAllocation allocation;
 };
@@ -139,8 +135,7 @@ struct AllocatedImage {
 	VkFormat imageFormat;
 };
 
-struct GPUMeshBuffers
-{
+struct GPUMeshBuffers {
 	AllocatedBuffer vertexBuffer;
 	AllocatedBuffer indexBuffer;
 };
@@ -150,12 +145,12 @@ struct GPUMeshBuffers
 // 从 SceneRenderer.h 迁移到此处，成为项目共享类型
 // ============================================================
 struct SceneStats {
-	uint32_t meshCount{ 0 };
-	uint32_t submeshCount{ 0 };
-	uint32_t materialCount{ 0 };
-	uint32_t textureCount{ 0 };
-	uint32_t vertexCount{ 0 };
-	uint32_t indexCount{ 0 };
+	uint32_t meshCount{0};
+	uint32_t submeshCount{0};
+	uint32_t materialCount{0};
+	uint32_t textureCount{0};
+	uint32_t vertexCount{0};
+	uint32_t indexCount{0};
 };
 
 // ============================================================
@@ -173,12 +168,12 @@ struct SceneStats {
 // - SceneRenderer 通过 const* 借用，不持有所有权
 // ============================================================
 struct GpuScene {
-	GPUMeshBuffers meshBuffers;                // 顶点 + 索引 buffer
-	AllocatedBuffer materialBuffer;            // MaterialParams SSBO
-	std::vector<AllocatedImage> textures;      // 纹理数组（image + view）
-	std::vector<SubMesh> subMeshes;            // CPU 端元数据（AABB、索引范围等）
-	std::vector<MaterialParams> materials;     // CPU 端材质参数
-	SceneStats stats;                          // 统计信息
+	GPUMeshBuffers meshBuffers; // 顶点 + 索引 buffer
+	AllocatedBuffer materialBuffer; // MaterialParams SSBO
+	std::vector<AllocatedImage> textures; // 纹理数组（image + view）
+	std::vector<SubMesh> subMeshes; // CPU 端元数据（AABB、索引范围等）
+	std::vector<MaterialParams> materials; // CPU 端材质参数
+	SceneStats stats; // 统计信息
 
 	// 至少顶点 buffer 创建成功即视为有效场景
 	bool valid() const {
@@ -187,8 +182,7 @@ struct GpuScene {
 };
 
 //for gpu driven instanse data
-struct InstanceData
-{
+struct InstanceData {
 	glm::mat4 modelMatrix;
 	glm::vec4 aabbMin_MatID;
 	glm::vec4 aabbMax_Pad;

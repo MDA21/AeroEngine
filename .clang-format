@@ -1,0 +1,65 @@
+# AeroEngine .clang-format
+# Tabs for indentation, spaces for alignment
+# CRITICAL: ReflowComments=false prevents Chinese text corruption
+BasedOnStyle: LLVM
+Language: Cpp
+
+# ----- Indentation -----
+UseTab: ForIndentation
+TabWidth: 4
+IndentWidth: 4
+IndentCaseLabels: false
+IndentPPDirectives: None
+IndentGotoLabels: false
+NamespaceIndentation: All
+
+# ----- Comments -----
+ReflowComments: false
+
+# ----- Line Width -----
+ColumnLimit: 0
+
+# ----- Braces -----
+BreakBeforeBraces: Attach
+Cpp11BracedListStyle: true
+
+# ----- Pointers & References -----
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+
+# ----- Access Modifiers -----
+AccessModifierOffset: -4
+
+# ----- Short Blocks -----
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortLambdasOnASingleLine: None
+
+# ----- Alignment -----
+AlignTrailingComments: false
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+
+# ----- Spacing -----
+SpaceBeforeParens: ControlStatements
+SpaceAfterCStyleCast: true
+SpaceBeforeAssignmentOperators: true
+SpacesInAngles: Leave
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# ----- Includes -----
+SortIncludes: false
+IncludeBlocks: Preserve
+
+# ----- Misc -----
+AlwaysBreakAfterReturnType: None
+BinPackArguments: false
+BinPackParameters: false
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
+MaxEmptyLinesToKeep: 1
