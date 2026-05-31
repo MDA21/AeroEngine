@@ -20,12 +20,6 @@ namespace Aero {
 		}
 
 		static bool recompile_shader_binaries(std::string* statusMessage) {
-			// TODO #2: 遍历 {"mesh.vert", "mesh.frag", "culling.comp"}，
-			// 对每个 shader 调用 glslc 编译为 .spv
-			// 1. 通过 get_executable_directory() 定位 shader 源文件目录和输出目录
-			// 2. 从 VULKAN_SDK 环境变量查找 glslc.exe
-			// 3. 用 std::system 执行编译命令
-			// 4. 任一失败则返回 false
 			const std::filesystem::path exeDir = get_executable_directory();
 			const std::filesystem::path sourceDir = exeDir.parent_path().parent_path() / "shaders";
 			const std::filesystem::path outputDir = exeDir / "shaders";
@@ -65,22 +59,15 @@ namespace Aero {
 		// ============================================================
 
 		void RenderContext::init(Aero::RHI::VulkanDevice* device, uint32_t windowWidth, uint32_t windowHeight) {
-			// TODO #3: 委托给 _sceneRenderer.init(device, windowWidth, windowHeight)
 			_sceneRenderer.init(device, windowWidth, windowHeight);
 			_renderDevice = device;
 		}
 
 		void RenderContext::cleanup() {
-			// TODO #4: 委托给 _sceneRenderer.cleanup()
 			_sceneRenderer.cleanup();
 		}
 
 		bool RenderContext::submit_scene(const GpuScene& gpuScene, std::string* statusMessage) {
-			// TODO #5: 协调流程 —
-			// 1. 调用 _sceneRenderer.bind_scene(gpuScene)
-			// 2. 调用 _sceneRenderer.is_scene_bound() 验证 buffer 创建成功
-			// 3. 设置 statusMessage（成功/失败信息）
-			// 4. 返回 true/false
 			_sceneRenderer.bind_scene(gpuScene);
 			if (_sceneRenderer.is_scene_bound()) {
 				if (statusMessage)
@@ -94,13 +81,6 @@ namespace Aero {
 		}
 
 		bool RenderContext::reload_scene(const GpuScene& gpuScene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage) {
-			// TODO #6: 完整重载 —
-			// 1. vkDeviceWaitIdle
-			// 2. cleanup()
-			// 3. init(device, windowWidth, windowHeight)
-			// 4. submit_scene(gpuScene, statusMessage)
-			// 注意：init 需要 VulkanDevice*，但 RenderContext 不持有它
-			// → 需要在 RenderContext 中加一个 _renderDevice 成员，在 init() 时保存
 			vkDeviceWaitIdle(_renderDevice->get_device());
 			cleanup();
 			init(_renderDevice, windowWidth, windowHeight);
@@ -108,15 +88,10 @@ namespace Aero {
 		}
 
 		bool RenderContext::reload_shaders_dry_run(std::string* statusMessage) {
-			// TODO #7: 仅重编译 shader，不修改场景状态
-			// → 调用 recompile_shader_binaries(statusMessage)
 			return recompile_shader_binaries(statusMessage);
 		}
 
 		bool RenderContext::reload_shaders_and_scene(const GpuScene& gpuScene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage) {
-			// TODO #8: shader 重编译 + 场景重载 —
-			// 1. 先调用 recompile_shader_binaries，失败则立即返回 false
-			// 2. 再调用 reload_scene(gpuScene, windowWidth, windowHeight, statusMessage)
 			if (!recompile_shader_binaries(statusMessage)) {
 				return false;
 			}
@@ -124,17 +99,14 @@ namespace Aero {
 		}
 
 		void RenderContext::draw(VkCommandBuffer cmd, VkImageView targetImageView, const Camera& camera, uint32_t screenWidth, uint32_t screenHeight, bool useGPUDriven, VkQueryPool timestampQueryPool) {
-			// TODO #9: 委托给 _sceneRenderer.draw(...)
 			_sceneRenderer.draw(cmd, targetImageView, camera, screenWidth, screenHeight, useGPUDriven, timestampQueryPool);
 		}
 
 		void RenderContext::recreate_render_targets(uint32_t width, uint32_t height) {
-			// TODO #10: 委托给 _sceneRenderer.recreate_render_targets(width, height)
 			_sceneRenderer.recreate_render_targets(width, height);
 		}
 
 		const SceneStats& RenderContext::get_scene_stats() const {
-			// TODO #11: 委托给 _sceneRenderer.get_scene_stats()
 			return _sceneRenderer.get_scene_stats();
 		}
 
