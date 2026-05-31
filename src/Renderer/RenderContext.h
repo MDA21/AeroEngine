@@ -36,6 +36,7 @@ namespace Aero {
 
 		private:
 			SceneRenderer _sceneRenderer;
+			Aero::RHI::VulkanDevice* _renderDevice{nullptr};
 		};
 
 	} // namespace Renderer

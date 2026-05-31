@@ -14,14 +14,11 @@ namespace Aero {
 			void recreate_render_targets(uint32_t width, uint32_t height);
 
 			// 绑定 GpuScene：生成 InstanceData/Indirect 并更新 Bindless 描述符
-			void bind_scene(const GpuScene& gpuScene);
-
-			bool submit_scene(const GpuScene& gpuScene, std::string* statusMessage = nullptr);
-			bool reload_scene(const GpuScene& gpuScene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage = nullptr);
-			bool reload_shaders_and_scene(const GpuScene& gpuScene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage = nullptr);
-
-			// 仅重编译着色器，不修改场景状态（用于重载前的预检）
-			bool reload_shaders_and_scene_dry_run(std::string* statusMessage = nullptr);
+			bool bind_scene(const GpuScene& gpuScene);
+			// 查询场景是否已成功绑定（Instance/Indirect buffer 均已创建）
+			bool is_scene_bound() const {
+				return _instanceBuffer.buffer != VK_NULL_HANDLE && _drawIndirectBuffer.buffer != VK_NULL_HANDLE;
+			}
 
 			const SceneStats& get_scene_stats() const;
 

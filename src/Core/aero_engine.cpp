@@ -43,8 +43,8 @@ void AeroEngine::init() {
 
 	create_render_semaphores();
 
-	_sceneRenderer = std::make_unique<Aero::Renderer::SceneRenderer>();
-	_sceneRenderer->init(_renderDevice.get(), _window->width(), _window->height());
+	_renderContext = std::make_unique<Aero::Renderer::RenderContext>();
+	_renderContext->init(_renderDevice.get(), _window->width(), _window->height());
 
 	init_imgui();
 
@@ -54,7 +54,7 @@ void AeroEngine::init() {
 	if (am.load_scene("main", _currentScenePath)) {
 		GpuScene* gpuScene = am.get_scene("main");
 		if (gpuScene) {
-			_sceneRenderer->submit_scene(*gpuScene, &_reloadStatus);
+			_renderContext->submit_scene(*gpuScene, &_reloadStatus);
 		} else {
 			std::cerr << "[AeroEngine] CRITICAL: get_scene returned null!" << std::endl;
 			_reloadStatus = "Failed to get GPU scene";
@@ -76,7 +76,7 @@ void AeroEngine::process_reload_requests() {
 
 	// Shader 重载：先编译再拆场景，避免编译失败后 _currentScene 悬空
 	if (_pendingShaderReload) {
-		if (!_sceneRenderer->reload_shaders_and_scene_dry_run(&_reloadStatus)) {
+		if (!_renderContext->reload_shaders_dry_run(&_reloadStatus)) {
 			// 编译失败，保持旧场景不动
 			_pendingShaderReload = false;
 			return;
@@ -103,11 +103,11 @@ void AeroEngine::process_reload_requests() {
 	}
 
 	if (_pendingShaderReload) {
-		_reloadStatus = _sceneRenderer->reload_shaders_and_scene(*gpuScene, _window->width(), _window->height(), &_reloadStatus)
+		_reloadStatus = _renderContext->reload_shaders_and_scene(*gpuScene, _window->width(), _window->height(), &_reloadStatus)
 		                    ? "Shaders reloaded"
 		                    : _reloadStatus;
 	} else if (_pendingSceneReload) {
-		_reloadStatus = _sceneRenderer->reload_scene(*gpuScene, _window->width(), _window->height(), &_reloadStatus)
+		_reloadStatus = _renderContext->reload_scene(*gpuScene, _window->width(), _window->height(), &_reloadStatus)
 		                    ? "Scene reloaded"
 		                    : _reloadStatus;
 	}
@@ -143,7 +143,7 @@ void AeroEngine::destroy_render_semaphores() {
 void AeroEngine::recreate_swapchain() {
 	_renderDevice->recreate_swapchain(_window.get());
 	create_render_semaphores();
-	_sceneRenderer->recreate_render_targets(_window->width(), _window->height());
+	_renderContext->recreate_render_targets(_window->width(), _window->height());
 	ImGui_ImplVulkan_SetMinImageCount(static_cast<uint32_t>(_renderDevice->get_swapchain_images().size()));
 	_window->reset_resize_flag();
 }
@@ -161,7 +161,7 @@ void AeroEngine::cleanup() {
 	if (_isInitialized) {
 		vkDeviceWaitIdle(_renderDevice->get_device());
 
-		_sceneRenderer->cleanup();
+		_renderContext->cleanup();
 		destroy_render_semaphores();
 		_mainDeletionQueue.flush();
 
@@ -293,21 +293,19 @@ void AeroEngine::draw() {
 
 	VK_CHECK(vkResetFences(_renderDevice->get_device(), 1, &currentFrame.renderFence));
 
-	// --- 1. UI �߼� ---
 	ImGui_ImplVulkan_NewFrame();
 	ImGui_ImplGlfw_NewFrame();
 	ImGui::NewFrame();
 
 	ImGui::Begin("AeroEngine Debug");
 
-	// ��ʷ֡ʱ�����ݣ����ڻ�������ͼ
 	static float frameTimes[120] = {0};
 	static int frameTimeOffset = 0;
 
 	static float fpsTimer = 0.0f;
 
 	fpsTimer += ImGui::GetIO().DeltaTime;
-	if (fpsTimer > 1.0f) { // ˢ�¿�һ�㣬��ͼ����˿��
+	if (fpsTimer > 1.0f) {
 		_perfStats.displayFps = ImGui::GetIO().Framerate;
 		_perfStats.displayMs = 1000.0f / _perfStats.displayFps;
 		fpsTimer = 0.0f;
@@ -325,7 +323,7 @@ void AeroEngine::draw() {
 	ImGui::Text("Upload Submit CPU: %.3f ms (%llu bytes)", _displayPerfStats.uploadCpuMs, static_cast<unsigned long long>(_displayPerfStats.uploadBytes));
 	ImGui::Separator();
 
-	const auto& sceneStats = _sceneRenderer->get_scene_stats();
+	const auto& sceneStats = _renderContext->get_scene_stats();
 	ImGui::Text("Scene Stats");
 	ImGui::Text("Meshes: %u", sceneStats.meshCount);
 	ImGui::Text("SubMeshes: %u", sceneStats.submeshCount);
@@ -357,7 +355,6 @@ void AeroEngine::draw() {
 		ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "Mode: CPU Loop Submission (No Culling)");
 	}
 	ImGui::Separator();
-	// ------------------------------------
 
 	ImGui::Text("Camera Settings");
 	ImGui::SliderFloat("Speed", &_camera.MovementSpeed, 1.0f, 50.0f);
@@ -367,7 +364,6 @@ void AeroEngine::draw() {
 	ImGui::End();
 	ImGui::Render();
 
-	// --- 2. ��ȡ��һ֡ͼ�� ---
 	uint32_t swapchainImageIndex;
 	VkResult acquireResult = vkAcquireNextImageKHR(_renderDevice->get_device(), _renderDevice->get_swapchain(), 1000000000, _renderDevice->get_current_frame().swapchainSemaphore, nullptr, &swapchainImageIndex);
 	if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR || acquireResult == VK_SUBOPTIMAL_KHR) {
@@ -387,13 +383,10 @@ void AeroEngine::draw() {
 	VkImage swapchainImg = _renderDevice->get_swapchain_images()[swapchainImageIndex];
 	VkImageView swapchainView = _renderDevice->get_swapchain_image_views()[swapchainImageIndex];
 
-	// --- 3. ������Ⱦ Pass ---
 	vkinit::transition_image(cmd, swapchainImg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-	// ���ĵ��ã��������صĻ��ƶ����� Renderer
-	_sceneRenderer->draw(cmd, swapchainView, _camera, _window->width(), _window->height(), _useGPUDriven, currentFrame.timestampQueryPool);
+	_renderContext->draw(cmd, swapchainView, _camera, _window->width(), _window->height(), _useGPUDriven, currentFrame.timestampQueryPool);
 
-	// --- 4. UI ��Ⱦ Pass (������ɫ������LOAD_OP_LOAD ��������л���) ---
 	VkExtent2D currentExtent = {_window->width(), _window->height()};
 	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(swapchainView, nullptr);
 	VkRenderingInfo renderInfo = vkinit::rendering_info(currentExtent, &colorAttachment, nullptr);
@@ -403,7 +396,6 @@ void AeroEngine::draw() {
 	vkCmdEndRendering(cmd);
 	vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, currentFrame.timestampQueryPool, 2);
 
-	// --- 5. �ύ����� ---
 	vkinit::transition_image(cmd, swapchainImg, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 	VK_CHECK(vkEndCommandBuffer(cmd));
 
@@ -415,8 +407,8 @@ void AeroEngine::draw() {
 	    .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
 	    .waitSemaphoreInfoCount = 1,
 	    .pWaitSemaphoreInfos = &waitInfo,
-	    .commandBufferInfoCount = 1, // ������ Signal ǰ��
-	    .pCommandBufferInfos = &cmdinfo, // ������ Signal ǰ��
+	    .commandBufferInfoCount = 1,
+	    .pCommandBufferInfos = &cmdinfo,
 	    .signalSemaphoreInfoCount = 1,
 	    .pSignalSemaphoreInfos = &signalInfo};
 	VK_CHECK(vkQueueSubmit2(_renderDevice->get_graphics_queue(), 1, &submit, currentFrame.renderFence));

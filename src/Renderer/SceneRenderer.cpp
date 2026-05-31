@@ -4,9 +4,6 @@
 #include <stb_image.h>
 #include <iostream>
 #include <array>
-#include <filesystem>
-#include <cstdlib>
-#include <Windows.h>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include "Resource/asset_manager.h"
@@ -40,47 +37,6 @@ namespace Aero {
 			return planes;
 		}
 
-		static std::filesystem::path get_executable_directory() {
-			char modulePath[MAX_PATH] = {};
-			DWORD pathLength = GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
-			return std::filesystem::path(std::string(modulePath, pathLength)).parent_path();
-		}
-
-		static bool recompile_shader_binaries(std::string* statusMessage) {
-			const std::filesystem::path exeDir = get_executable_directory();
-			const std::filesystem::path sourceDir = exeDir.parent_path().parent_path() / "shaders";
-			const std::filesystem::path outputDir = exeDir / "shaders";
-			std::filesystem::create_directories(outputDir);
-
-			std::string glslcCommand = "glslc";
-			if (const char* vulkanSdk = std::getenv("VULKAN_SDK")) {
-				std::filesystem::path glslcPath = std::filesystem::path(vulkanSdk) / "Bin" / "glslc.exe";
-				if (std::filesystem::exists(glslcPath)) {
-					glslcCommand = "\"" + glslcPath.string() + "\"";
-				}
-			}
-
-			const std::array<std::string, 3> shaderNames = {"mesh.vert", "mesh.frag", "culling.comp"};
-			for (const std::string& shaderName : shaderNames) {
-				const std::filesystem::path sourcePath = sourceDir / shaderName;
-				const std::filesystem::path outputPath = outputDir / (shaderName + ".spv");
-				const std::string command = glslcCommand + " \"" + sourcePath.string() + "\" -o \"" + outputPath.string() + "\"";
-
-				std::cout << "[Reload] source: " << sourcePath << std::endl;
-				std::cout << "[Reload] output: " << outputPath << std::endl;
-				std::cout << "[Reload] command: " << command << std::endl;
-
-				if (std::system(command.c_str()) != 0) {
-					if (statusMessage) {
-						*statusMessage = "Shader compile failed: " + shaderName;
-					}
-					return false;
-				}
-			}
-
-			return true;
-		}
-
 		void SceneRenderer::init(Aero::RHI::VulkanDevice* device, uint32_t windowWidth, uint32_t windowHeight) {
 			_renderDevice = device;
 
@@ -103,6 +59,7 @@ namespace Aero {
 			init_pipelines();
 		}
 
+		//done
 		void SceneRenderer::cleanup() {
 			if (_instanceBuffer.buffer != VK_NULL_HANDLE) {
 				vmaDestroyBuffer(_renderDevice->get_allocator(), _instanceBuffer.buffer, _instanceBuffer.allocation);
@@ -114,36 +71,6 @@ namespace Aero {
 			}
 			destroy_depth_image();
 			_deletionQueue.flush();
-		}
-
-		bool SceneRenderer::submit_scene(const GpuScene& gpuScene, std::string* statusMessage) {
-			bind_scene(gpuScene);
-			if (_drawIndirectBuffer.buffer == VK_NULL_HANDLE || _instanceBuffer.buffer == VK_NULL_HANDLE) {
-				if (statusMessage)
-					*statusMessage = "Failed to create GPU buffers for the scene.";
-				return false;
-			}
-			if (statusMessage)
-				*statusMessage = "Scene submitted successfully.";
-			return true;
-		}
-
-		bool SceneRenderer::reload_scene(const GpuScene& gpuScene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage) {
-			VK_CHECK(vkDeviceWaitIdle(_renderDevice->get_device()));
-			cleanup();
-			init(_renderDevice, windowWidth, windowHeight);
-			return submit_scene(gpuScene, statusMessage);
-		}
-
-		bool SceneRenderer::reload_shaders_and_scene_dry_run(std::string* statusMessage) {
-			return recompile_shader_binaries(statusMessage);
-		}
-
-		bool SceneRenderer::reload_shaders_and_scene(const GpuScene& gpuScene, uint32_t windowWidth, uint32_t windowHeight, std::string* statusMessage) {
-			if (!recompile_shader_binaries(statusMessage)) {
-				return false;
-			}
-			return reload_scene(gpuScene, windowWidth, windowHeight, statusMessage);
 		}
 
 		void SceneRenderer::recreate_render_targets(uint32_t width, uint32_t height) {
@@ -247,7 +174,7 @@ namespace Aero {
 			pushConstant.size = sizeof(glm::mat4);
 			pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-			//���� Pipeline Layout
+			//Pipeline Layout
 			VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
 			pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 			pipelineLayoutInfo.setLayoutCount = 1;
@@ -257,11 +184,10 @@ namespace Aero {
 
 			VK_CHECK(vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &_trianglePipelineLayout));
 
-			//���� Pipeline Builder
+			// Pipeline Builder
 			PipelineBuilder builder;
 			builder._pipelineLayout = _trianglePipelineLayout;
 
-			//������ɫ���׶�
 			VkPipelineShaderStageCreateInfo vertStage{};
 			vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 			vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -269,7 +195,6 @@ namespace Aero {
 			vertStage.pName = "main";
 			builder._shaderStages.push_back(vertStage);
 
-			//Ƭ����ɫ���׶�
 			VkPipelineShaderStageCreateInfo fragStage{};
 			fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 			fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -568,7 +493,7 @@ namespace Aero {
 			vkUpdateDescriptorSets(_renderDevice->get_device(), 1, &textureWrite, 0, nullptr);
 		}
 
-		void SceneRenderer::bind_scene(const GpuScene& gpuScene) {
+		bool SceneRenderer::bind_scene(const GpuScene& gpuScene) {
 			if (_instanceBuffer.buffer) {
 				vmaDestroyBuffer(_renderDevice->get_allocator(), _instanceBuffer.buffer, _instanceBuffer.allocation);
 				_instanceBuffer.buffer = VK_NULL_HANDLE;
@@ -583,7 +508,7 @@ namespace Aero {
 			const std::vector<SubMesh>& renderables = gpuScene.subMeshes;
 			_instanceCount = static_cast<uint32_t>(renderables.size());
 			if (_instanceCount == 0)
-				return;
+				return false;
 
 			std::vector<InstanceData> instances;
 			instances.reserve(_instanceCount);
@@ -634,6 +559,7 @@ namespace Aero {
 
 			_currentScene = &gpuScene;
 			update_global_descriptor_set();
+			return true;
 		}
 
 	} // namespace Renderer

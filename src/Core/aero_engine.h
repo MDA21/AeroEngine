@@ -3,7 +3,7 @@
 #include "Core/Window.h"
 #include "RHI/VulkanDevice.h"
 #include "RHI/vk_types.h"
-#include "Renderer/SceneRenderer.h"
+#include "Renderer/RenderContext.h"
 #include <string>
 
 struct GLFWwindow;
@@ -43,7 +43,7 @@ private:
 
 	std::unique_ptr<Aero::Window> _window;
 	std::unique_ptr<Aero::RHI::VulkanDevice> _renderDevice;
-	std::unique_ptr<Aero::Renderer::SceneRenderer> _sceneRenderer;
+	std::unique_ptr<Aero::Renderer::RenderContext> _renderContext;
 
 	DeletionQueue _mainDeletionQueue;
 
