@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# 根治 MSVC CP936 下 UTF-8 中文注释导致头文件解析失败的问题
+if(MSVC)
+	add_compile_options("/utf-8")
+endif()
+
 find_package(Vulkan REQUIRED)
 
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
