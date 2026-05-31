@@ -6,8 +6,8 @@
 ## 当前状态
 
 - 开始日期：2026-05-27
-- 整体状态：🔄 DOING
-- 第一、二、三批已完成（AssetManager + SceneRenderer 职责收窄）
+- 整体状态：✅ DONE
+- 全部 15 项已完成，RenderContext 作为薄协调层引入
 
 ---
 
@@ -38,17 +38,18 @@
 
 | # | 文件 | 任务 | 难度 | 状态 |
 |---|------|------|------|------|
-| 9 | `SceneRenderer.cpp` | `draw()` — 从 `_currentScene` 读取 buffer 而非旧成员变量 | ⭐⭐ | ⬜ TODO |
-| 10 | `SceneRenderer.cpp` | `cleanup()` — 只销毁 Instance/Indirect buffer，不销毁场景资源 | ⭐⭐ | ⬜ TODO |
-| 11 | `aero_engine.cpp` | `init()` — 改用 AssetManager::load_scene + SceneRenderer::bind_scene 新流程 | ⭐⭐ | ⬜ TODO |
-| 12 | `aero_engine.cpp` | `process_reload_requests()` — 热重载适配新架构 | ⭐⭐ | ⬜ TODO |
-| 13 | `SceneRenderer.cpp` | 修改 submit/reload/reload_shaders 签名（GpuScene& 替代 SceneData&） | ⭐⭐ | ⬜ TODO |
+| 9 | `SceneRenderer.cpp` | `draw()` — 从 `_currentScene` 读取 buffer 而非旧成员变量 | ⭐⭐ | ✅ DONE |
+| 10 | `SceneRenderer.cpp` | `cleanup()` — 只销毁 Instance/Indirect buffer，不销毁场景资源 | ⭐⭐ | ✅ DONE |
+| 11 | `aero_engine.cpp` | `init()` — 改用 AssetManager::load_scene + SceneRenderer::bind_scene 新流程 | ⭐⭐ | ✅ DONE |
+| 12 | `aero_engine.cpp` | `process_reload_requests()` — 热重载适配新架构 | ⭐⭐ | ✅ DONE |
+| 13 | `SceneRenderer.cpp` | 修改 submit/reload/reload_shaders 签名（GpuScene& 替代 SceneData&） | ⭐⭐ | ✅ DONE |
 
 ## 第五批（清理与反思）
 
 | # | 文件 | 任务 | 难度 | 状态 |
 |---|------|------|------|------|
-| 14 | `SceneRenderer.cpp` | 删除旧 `upload_scene()` 实现（已搬迁到 AssetManager） | ⭐ | ⬜ TODO |
+| 14 | `SceneRenderer.cpp` | 删除旧 `upload_scene()` 实现（已搬迁到 AssetManager） | ⭐ | ✅ DONE |
+| 15 | — | 思考题：submit_scene/reload_scene 应该属于 SceneRenderer 还是 AeroEngine？ | ⭐ | ✅ DONE — 引入 RenderContext 作为协调层 |
 | 15 | — | 思考题：submit_scene/reload_scene 应该属于 SceneRenderer 还是 AeroEngine？ | ⭐ | ⬜ TODO |
 
 ---

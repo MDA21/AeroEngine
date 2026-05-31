@@ -84,7 +84,7 @@
 
 - [ ] `Shader/Scene 手动重载`
   - 状态：TODO
-- [ ] `资源生命周期清理`
+- [x] `资源生命周期清理` — ✅ DONE (2026-05-31, 引入 RenderContext)
   - 说明：理顺 `SceneRenderer` 与 `AssetManager` 的职责边界
   - 状态：TODO
 - [ ] `Benchmark 记录表`
