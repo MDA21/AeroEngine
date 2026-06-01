@@ -66,6 +66,9 @@ add_executable(${PROJECT_NAME}
     src/main.cpp
     "src/Core/aero_engine.cpp"
     "src/Core/aero_engine.h"
+    "src/Editor/CommandBus.h"
+    "src/Editor/CommandBus.cpp"
+    "src/Editor/CommandResult.h"
     "src/RHI/vk_types.h"
    "src/RHI/vk_types.cpp"  "src/RHI/vk_initializers.h" "src/RHI/vk_pipelines.h" "src/RHI/vk_pipelines.cpp"
  ${IMGUI_SOURCES}

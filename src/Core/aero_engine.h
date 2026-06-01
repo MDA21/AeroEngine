@@ -3,6 +3,7 @@
 #include "Core/Window.h"
 #include "RHI/VulkanDevice.h"
 #include "RHI/vk_types.h"
+#include "Editor/CommandBus.h"
 #include "Renderer/RenderContext.h"
 #include <string>
 
@@ -43,6 +44,7 @@ private:
 
 	std::unique_ptr<Aero::Window> _window;
 	std::unique_ptr<Aero::RHI::VulkanDevice> _renderDevice;
+	std::unique_ptr<Aero::CommandBus> _commandBus;
 	std::unique_ptr<Aero::Renderer::RenderContext> _renderContext;
 
 	DeletionQueue _mainDeletionQueue;

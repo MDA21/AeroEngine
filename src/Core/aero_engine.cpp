@@ -46,6 +46,8 @@ void AeroEngine::init() {
 	_renderContext = std::make_unique<Aero::Renderer::RenderContext>();
 	_renderContext->init(_renderDevice.get(), _window->width(), _window->height());
 
+	_commandBus = std::make_unique<Aero::CommandBus>();
+
 	init_imgui();
 
 	_currentScenePath = "F:/VSproject/AeroEngine/assets/Sponza/glTF/Sponza.gltf";
@@ -175,7 +177,6 @@ void AeroEngine::process_input() {
 	float dt = _window->get_delta_time();
 	bool isSprint = _window->is_key_down(Aero::Key::LeftShift);
 
-	// ��������ƶ�
 	if (_window->is_key_down(Aero::Key::W))
 		_camera.ProcessKeyboard(CameraMovement::FORWARD, dt, isSprint);
 	if (_window->is_key_down(Aero::Key::S))
@@ -360,6 +361,35 @@ void AeroEngine::draw() {
 	ImGui::SliderFloat("Speed", &_camera.MovementSpeed, 1.0f, 50.0f);
 	ImGui::SliderFloat("Sensitivity", &_camera.MouseSensitivity, 0.01f, 1.0f);
 	ImGui::Text("Position: (%.1f, %.1f, %.1f)", _camera.Position.x, _camera.Position.y, _camera.Position.z);
+
+	// ---- Command Log ----
+	ImGui::Separator();
+	ImGui::Text("Command Log");
+
+	if (ImGui::Button("Clear Log")) {
+		_commandBus->clear_log();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Test: Get Scene Summary")) {
+		Aero::CmdGetSceneSummary cmd;
+		cmd.renderContext = _renderContext.get();
+		_commandBus->execute(cmd);
+	}
+	if (ImGui::Button("Test: Toggle GPU-Driven")) {
+		Aero::CmdToggleGPUDriven cmd;
+		cmd.gpuDriven = &_useGPUDriven;
+		_commandBus->execute(cmd);
+	}
+	ImGui::Separator();
+	const std::vector<Aero::CommandLogEntry> logs = _commandBus->get_log(20);
+	if (logs.empty()) {
+		ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(empty)");
+	} else {
+		for (const auto& entry : logs) {
+			ImVec4 color = entry.success ? ImVec4(0.2f, 1.0f, 0.2f, 1.0f) : ImVec4(1.0f, 0.2f, 0.2f, 1.0f);
+			ImGui::TextColored(color, "[%s] %s — %s — %.3f ms", entry.success ? "✓" : "✗", entry.commandName.c_str(), entry.message.c_str(), entry.elapsedMs);
+		}
+	}
 
 	ImGui::End();
 	ImGui::Render();
